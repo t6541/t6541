@@ -22,6 +22,15 @@
     "Email sending capability unavailable; no email sent"
   ],
   "windows_release": {
-    "status": "pending"
+    "status": "success",
+    "run_id": 37525541201,
+    "url": "https://github.com/t6541/t6541/releases/download/v0.7.400/CodexQuantBot-v0.7.400-Slots-Base-Switch.exe",
+    "size_bytes": 31667937,
+    "sha256": "16757f3ffec2b3426d2a5d341d73aa5ef8a23554081b4b717623584e2e643abd",
+    "downloaded_and_hash_verified": true,
+    "PE_architecture": "AMD64",
+    "launched": false,
+    "build_commit": "f691696ce2588b5e7d0b4794e1c9f012365bc7ce",
+    "windows_test_step": "success"
   }
 }
