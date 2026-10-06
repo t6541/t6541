@@ -20,6 +20,16 @@
     "20 additional strategy/execution failures exist on imported baseline; see validation-v0.7.394.json"
   ],
   "windows_release": {
-    "status": "pending"
+    "status": "success",
+    "run_id": 37481736361,
+    "build_commit": "56c48b54ab93a10b9dd8dba956eeacbfec0e7bc3",
+    "platform": "GitHub Releases",
+    "url": "https://github.com/t6541/t6541/releases/download/v0.7.395/CodexQuantBot-v0.7.395-Slots-Base-Switch.exe",
+    "size_bytes": 31651701,
+    "sha256": "5f58a51a11336c7029351f3dd8d23664b43eacbf5370e4f651cb714265d01c09",
+    "downloaded_and_hash_verified": true,
+    "PE_architecture": "AMD64",
+    "launched": false,
+    "windows_test_step": "success; detailed log download blocked by separate results-receiver host network policy"
   }
 }
