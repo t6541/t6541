@@ -1,0 +1,37 @@
+{
+  "version": "0.7.397",
+  "date": "2026-10-07",
+  "offline": true,
+  "offline_validation": {
+    "passed": 129,
+    "failed": 0,
+    "files": [
+      "test_account05_signals.py",
+      "test_account05_state.py",
+      "test_account05_review_view.py",
+      "test_manual_order_review.py",
+      "test_live_aggressive_adapter.py",
+      "test_extreme_profit_sweep.py",
+      "test_account05_exit_reconciliation.py"
+    ],
+    "guard": "Python socket connections and DNS blocked; exchange transport simulated"
+  },
+  "regression_reproduced_before_fix": "Canceled addon profit limit marked filled_unprotected then raises the exact generic unprotected batch fault from the screenshot. New regression test failed before fix.",
+  "fix": "Keep addons under local management, isolate original exit intent and re-read it without reposting. Reconcile terminal cumulative quantity, reject quantity regression, close fully filled canceled orders. Base independent TP protections retained.",
+  "additional_execution_strategy_suite": {
+    "passed": 47,
+    "failed": 20,
+    "same_failure_test_ids_as_imported_baseline": true,
+    "baseline_report": "docs/validation-v0.7.394.json"
+  },
+  "limitations": [
+    "Actual user fault log not provided; screenshot does not uniquely identify the affected lot or confirm this is the same runtime branch",
+    "No exchange connection, desktop startup or live trading performed",
+    "Isolated residual exit intents remain held for reconciliation; a subsequent qualifying extreme can reconcile and reduce only the remainder",
+    "20 pre-existing additional execution/strategy test failures remain"
+  ],
+  "windows_release": {
+    "status": "pending",
+    "launched": false
+  }
+}

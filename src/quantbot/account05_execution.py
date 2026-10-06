@@ -588,14 +588,15 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
             continue
         signal_id = f"exit:{lot.lot_id}"
         intent = ledger.order_intent(signal_id)
-        if (intent is None or str(intent["status"]) != "submitted"
+        if (intent is None or str(intent["status"]) not in {"submitted", "reconcile_required"}
                 or not intent["exchange_order_id"]):
             continue
         order_id = str(intent["exchange_order_id"])
         fill = client.order(ACCOUNT05_INSTRUMENT, order_id=order_id)
         state = str(fill.get("state") or "")
         cumulative = Decimal(str(fill.get("accFillSz") or fill.get("fillSz") or "0"))
-        if cumulative < 0 or cumulative > lot.original_size:
+        if (cumulative < lot.original_size - lot.remaining_size
+                or cumulative > lot.original_size):
             # Isolate malformed exchange data to this lot.  Do not fault-stop
             # the whole account or submit another uncertain reduce order.
             ledger.update_order_intent(
@@ -610,20 +611,18 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
                 detail=str(intent["detail"] or "") +
                 f"；止盈单仍在交易所{state}，累计成交{cumulative}")
             continue
-        if state != "filled":
-            ledger.mark_take_profit_missing(lot.lot_id)
+        terminal = state in {"filled", "canceled", "mmp_canceled"}
+        if not terminal or cumulative < lot.original_size:
+            if terminal:
+                # A canceled limit can have actual partial fills. Rebuild
+                # cumulative remaining size once; never treat an addon as a
+                # base requiring an independent server-side TP. Preserve the
+                # exit ID and isolate its intent so no uncertain POST repeats.
+                ledger.sync_take_profit_fill(lot.lot_id, cumulative)
+            ledger.mark_addon_ma5_managed(lot.lot_id)
             ledger.update_order_intent(
                 signal_id, "reconcile_required", exchange_order_id=order_id,
-                detail=f"止盈单状态{state}，已隔离该lot待对账")
-            continue
-        if cumulative < lot.original_size:
-            # A filled order may still be short due to exchange partial fill.
-            # Keep the residual lot open and let the normal manager handle it.
-            ledger.sync_take_profit_fill(lot.lot_id, cumulative)
-            ledger.update_order_intent(
-                signal_id, "submitted", exchange_order_id=order_id,
-                detail=str(intent["detail"] or "") +
-                f"；止盈单已结束但仅成交{cumulative}/{lot.original_size}")
+                detail=f"止盈单状态{state}，累计成交{cumulative}/{lot.original_size}；保留剩余小单和原订单号待对账，不重复提交")
             continue
         exit_price = Decimal(str(fill.get("avgPx") or fill.get("fillPx") or "0"))
         if exit_price <= 0:
@@ -1256,8 +1255,12 @@ def execute_account05_tick(*, client: Account05LiveClient,
         client, ledger, config, addon_closed_sides)
     order_ids.extend(_restore_unprotected_base_take_profits(
         client, ledger, positions))
-    if ledger.unprotected_lots():
-        raise OkxError("账户05存在已成交但未绑定独立止盈的批次；停止新开仓并先对账")
+    unprotected = ledger.unprotected_lots()
+    if unprotected:
+        details = "；".join(
+            f"批次={lot.lot_id},类型={lot.kind},方向={lot.side.value},剩余={lot.remaining_size}"
+            for lot in unprotected[:10])
+        raise OkxError("账户05存在已成交但未绑定独立止盈的批次；停止新开仓并先对账；" + details)
     # A restored TP can return immediately unless this same tick confirmed a
     # full base TP fill.  In that case reconciliation must continue: aggregate
     # exchange size may be supplied only by add-ons, so the missing base leg
@@ -1552,9 +1555,14 @@ def execute_account05_tick(*, client: Account05LiveClient,
                       if permission.reason_code == "combined_floating_loss_limit_reached"
                       else "capacity_blocked")
             return Account05TickResult(action, reason)
+    isolated = ledger.connection.execute(
+        """SELECT COUNT(*) FROM account05_order_intents i JOIN account05_lots l
+        ON i.signal_id='exit:' || l.lot_id
+        WHERE i.status='reconcile_required' AND l.kind='addon' AND l.status<>'closed'""").fetchone()[0]
+    reconciliation_note = f"；小单退出待对账{isolated}笔（保留持仓，不重复下单）" if isolated else ""
     return Account05TickResult(
         "submitted" if order_ids else "observe",
         f"5分钟={signals.trend_5m.value}；触发="
-        f"{trigger.identity if trigger else '无'}；{trigger.reason if trigger else signals.trend_reason}",
+        f"{trigger.identity if trigger else '无'}；{trigger.reason if trigger else signals.trend_reason}" + reconciliation_note,
         tuple(order_ids),
     )
