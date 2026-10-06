@@ -8,7 +8,7 @@ a = Analysis(
     excludes=["pytest", "yaml", "tkinter", "matplotlib", "pandas.tests", "numpy.tests", "openpyxl", "lxml", "PIL"], noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="CodexQuantBot-v0.7.399-Slots-Base-Switch",
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="CodexQuantBot-v0.7.400-Slots-Base-Switch",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
     console=False, version="version_info.txt", uac_admin=True)
 

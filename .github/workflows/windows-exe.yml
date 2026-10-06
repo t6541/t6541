@@ -48,7 +48,7 @@ jobs:
               "tests/test_account05_review_view.py", "tests/test_manual_order_review.py",
               "tests/test_live_aggressive_adapter.py", "tests/test_extreme_profit_sweep.py", "tests/test_account05_exit_reconciliation.py",
               "tests/test_account05_base_retired.py", "tests/test_live_account_settings.py",
-              "tests/test_account05_inventory_wait.py"
+              "tests/test_account05_inventory_wait.py", "tests/test_account05_position_authority.py"
           ]))
       - name: Build EXE without launching it
         shell: pwsh

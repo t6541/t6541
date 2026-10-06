@@ -51,6 +51,19 @@ class ManualInventoryPending(OkxError):
     """Read-only inventory mismatch; retry without authorizing new writes."""
 
 
+def _confirmed_position_map(client):
+    snapshot = client.raw_snapshot()
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("positions"), list):
+        raise ManualInventoryPending("持仓快照缺失，不能视为空仓或清理虚拟账")
+    for row in snapshot["positions"]:
+        if not isinstance(row, dict) or "pos" not in row:
+            raise ManualInventoryPending("持仓快照数量缺失，不能清理虚拟账")
+        value = Decimal(str(row["pos"]))
+        if not value.is_finite():
+            raise ManualInventoryPending("持仓快照数量无效，不能清理虚拟账")
+    return _position_map(snapshot)
+
+
 def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStore,
                          *, inst_id: str | None = None,
                          profit_points: Decimal = Decimal("10"),
@@ -126,36 +139,28 @@ def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStor
         if ledger.order_intent(f"exit:{signal}") is not None:
             continue
         plans[signal] = entry
-    positions = _position_map(client.raw_snapshot())
-    projected = {side: Decimal(0) for side in (PositionSide.LONG, PositionSide.SHORT)}
-    for lot in ledger.open_lots():
-        if lot.lot_id not in plans:
-            projected[lot.side] += lot.remaining_size
-    for entry in plans.values():
-        side = PositionSide(entry["logical"])
-        projected[side] += entry["qty"] - entry["closed"]
-    for side, quantity in projected.items():
-        actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
-        if actual and quantity > actual:
-            base_quantity = sum((lot.remaining_size for lot in ledger.open_lots(side)
-                                 if lot.kind == "base"), Decimal(0))
-            if base_quantity > actual:
-                raise OkxError(f"实际仓位{actual}不足以覆盖当前基础仓{base_quantity}；停止新交易并对账")
-            raise ManualInventoryPending(f"手工历史/批次数量{quantity}超过{side.value}实际仓位{actual}；差额{quantity-actual}，先对账，不反手")
+    positions = _confirmed_position_map(client)
+    if any(PositionSide(e["logical"]) not in positions for e in plans.values()):
+        positions = _confirmed_position_map(client)
+    for signal, entry in plans.items():
+        excluded = ledger.virtual_excluded_size(signal, entry["closed"])
+        entry["effective_qty"] = max(Decimal(0), entry["qty"] - excluded)
     imported = 0
     for signal, entry in plans.items():
         side = PositionSide(entry["logical"])
         actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
-        remaining = entry["qty"] - entry["closed"] if actual else Decimal(0)
+        remaining = max(Decimal(0), entry["effective_qty"] - entry["closed"])
         price = entry["cost"] / entry["qty"]
         created = datetime.fromtimestamp(entry["ts"] / 1000, timezone.utc).isoformat()
         closed_at = (datetime.fromtimestamp(entry["close_ts"] / 1000, timezone.utc).isoformat()
                      if entry["close_ts"] and not remaining else "")
         existing = ledger.connection.execute(
             "SELECT 1 FROM account05_lots WHERE lot_id=?", (signal,)).fetchone()
+        if existing is None and entry["effective_qty"] <= 0:
+            continue
         if existing is None:
             ledger.record_filled_lot(lot_id=signal, signal_id=signal, side=side, kind="addon",
-                entry_order_id=str(entry["row"]["ordId"]), entry_price=price, size=entry["qty"],
+                entry_order_id=str(entry["row"]["ordId"]), entry_price=price, size=entry["effective_qty"],
                 take_profit_price=take_profit_price_by_points(price, side, max(profit_points, Decimal("10")), Decimal("0.01")),
                 take_profit_pct=Decimal(0))
             imported += 1
@@ -166,10 +171,13 @@ def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStor
             status=?,created_at_utc=?,closed_at_utc=?,exit_order_id=?,exit_price=?,
             local_gross_pnl='',local_fee_estimate='',local_net_pnl='',take_profit_algo_id=NULL,
             updated_at_utc=? WHERE lot_id=?""",
-            (str(entry["qty"]), str(remaining), str(price),
+            (str(entry["effective_qty"]), str(remaining), str(price),
              "tp_live" if remaining else "closed", created, closed_at,
              "、".join(entry["ids"]), str(entry["close_cost"] / entry["closed"]) if entry["closed"] else "",
              datetime.now(timezone.utc).isoformat(), signal))
+        if not actual and remaining:
+            ledger.trim_virtual_quantity(signal, remaining,
+                "交易所该方向归零，清理手工虚拟残留；非成交、不计利润")
     with ledger.connection:
         ledger.connection.executemany(
             "INSERT OR REPLACE INTO account05_manual_order_history VALUES (?,?)",
@@ -194,6 +202,7 @@ class AddonCloseResult:
     exit_price: Decimal
     exchange_realized_pnl: Decimal | None = None
     exchange_fee: Decimal | None = None
+    filled_size: Decimal | None = None
 
 
 def _order_does_not_exist(exc: BaseException) -> bool:
@@ -394,6 +403,11 @@ def _close_addon_on_ma5(client, ledger, lot, reason: str) -> AddonCloseResult:
     # base exposure may leave only through its own exchange TP order.
     if lot.kind != "addon":
         raise OkxError("账户05拒绝用小单/利润池通道减基础仓；基础仓只能由自身止盈单退出")
+    if ledger.order_intent(f"exit:{lot.lot_id}") is None:
+        reconcile_virtual_position(client, ledger)
+        lot = ledger.get_lot(lot.lot_id)
+        if not lot.remaining_size:
+            return AddonCloseResult("", Decimal(0))
     signal_id = f"exit:{lot.lot_id}"
     client_id = _client_id("A5EX", signal_id)
     intent = ledger.order_intent(signal_id)
@@ -480,8 +494,15 @@ def _close_addon_on_ma5(client, ledger, lot, reason: str) -> AddonCloseResult:
             raise OkxError("账户05小单MA5止盈意图缺少交易所订单号，停止对账")
     fill = _wait_for_fill(client, order_id)
     cumulative = Decimal(str(fill.get("accFillSz") or fill.get("fillSz") or "0"))
+    if cumulative < 0 or cumulative > lot.remaining_size:
+        raise OkxError("账户05小单MA5止盈成交数量异常，停止对账")
     if cumulative < lot.remaining_size:
-        raise OkxError("账户05小单MA5止盈未完全成交，停止对账")
+        if lot.side not in _confirmed_position_map(client) and str(fill.get("state")) == "filled":
+            ledger.trim_virtual_quantity(lot.lot_id, lot.remaining_size - cumulative,
+                "手工减仓竞态后交易所归零，清理未成交虚拟差额；非成交、不计利润")
+            lot = ledger.get_lot(lot.lot_id)
+        else:
+            raise OkxError("账户05小单MA5止盈未完全成交，停止对账")
     ledger.update_order_intent(signal_id, "filled", exchange_order_id=order_id, detail=reason)
     exit_price = Decimal(str(fill.get("avgPx") or fill.get("fillPx") or "0"))
     def optional_decimal(*keys: str) -> Decimal | None:
@@ -496,7 +517,7 @@ def _close_addon_on_ma5(client, ledger, lot, reason: str) -> AddonCloseResult:
     result = AddonCloseResult(
         order_id, exit_price,
         optional_decimal("pnl", "fillPnl", "realizedPnl"),
-        optional_decimal("fee", "fillFee"))
+        optional_decimal("fee", "fillFee"), filled_size=cumulative)
     ledger.sync_take_profit_fill(lot.lot_id, lot.original_size)
     return result
 
@@ -530,6 +551,10 @@ def _submit_addon_profit_limit(client, ledger, lot, mark: Decimal,
     signal_id = f"exit:{lot.lot_id}"
     if ledger.order_intent(signal_id) is not None:
         return ""  # An existing or uncertain intent must be reconciled first.
+    reconcile_virtual_position(client, ledger)
+    lot = ledger.get_lot(lot.lot_id)
+    if not lot.remaining_size:
+        return ""
     client_id = _client_id("A5EX", signal_id)
     ledger.claim_order_intent(
         signal_id=signal_id, client_order_id=client_id, side=lot.side,
@@ -611,6 +636,8 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
         order_id = str(intent["exchange_order_id"])
         fill = client.order(ACCOUNT05_INSTRUMENT, order_id=order_id)
         state = str(fill.get("state") or "")
+        client._account05_exit_states = getattr(client, "_account05_exit_states", {})
+        client._account05_exit_states[lot.lot_id] = state
         cumulative = Decimal(str(fill.get("accFillSz") or fill.get("fillSz") or "0"))
         if (cumulative < lot.original_size - lot.remaining_size
                 or cumulative > lot.original_size):
@@ -629,6 +656,15 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
                 f"；止盈单仍在交易所{state}，累计成交{cumulative}")
             continue
         terminal = state in {"filled", "canceled", "mmp_canceled"}
+        if terminal and 0 < cumulative < lot.original_size:
+            positions = _confirmed_position_map(client)
+            if lot.side not in positions:
+                # A reduce-only exit may finish below its requested quantity
+                # after a manual reduction. Book only its confirmed real fills.
+                removed = lot.original_size - cumulative
+                ledger.trim_virtual_quantity(lot.lot_id, removed,
+                    f"交易所空仓，已知退出实际成交{cumulative}张；清理虚拟差额{removed}，非成交、不计利润")
+                lot = ledger.get_lot(lot.lot_id)
         if not terminal or cumulative < lot.original_size:
             if terminal:
                 # A canceled limit can have actual partial fills. Rebuild
@@ -716,7 +752,7 @@ def _close_extreme_winner(client, ledger, lot, spec, points, mark, reason):
                 raise OkxError("极值平仓旧订单成交数量异常，先对账，不反手")
             _extreme_exit_fill(ledger, lot.lot_id, oid, quantity,
                                Decimal(str(order.get("avgPx") or order.get("fillPx") or "0")))
-            total_closed = lot.original_size - requested + quantity
+            total_closed = max(Decimal(0), lot.original_size - requested) + quantity
             if total_closed > lot.original_size or total_closed < 0:
                 raise OkxError("极值平仓累计数量异常")
             # This is cumulative and therefore safe after partial-fill polling.
@@ -738,10 +774,12 @@ def _close_extreme_winner(client, ledger, lot, spec, points, mark, reason):
             raise OkxError("极值待平订单实时报价已不满足严格止盈点数；未平订单保留，不开反手")
         result = _close_addon_on_ma5(client, ledger, lot, reason)
         if result.order_id:
-            _extreme_exit_fill(ledger, lot.lot_id, result.order_id, lot.remaining_size, result.exit_price)
+            _extreme_exit_fill(ledger, lot.lot_id, result.order_id,
+                result.filled_size if result.filled_size is not None else
+                Decimal(str(ledger.order_intent(f"exit:{lot.lot_id}")["requested_size"])), result.exit_price)
     if ledger.get_lot(lot.lot_id).status != "closed":
         raise OkxError("极值盈利订单未确认全部平仓，不开反手")
-    _book_extreme_fills(ledger, lot, spec)
+    _book_extreme_fills(ledger, ledger.get_lot(lot.lot_id), spec)
     return str(ledger.get_lot(lot.lot_id).lot_id)
 
 
@@ -765,6 +803,8 @@ def _reconcile_extreme_exit_results(client, ledger, spec):
                 continue
             raise
         oid = str(fill.get("ordId") or oid)
+        client._account05_exit_states = getattr(client, "_account05_exit_states", {})
+        client._account05_exit_states[lot.lot_id] = str(fill.get("state") or "")
         requested = Decimal(str(intent["requested_size"]))
         quantity = Decimal(str(fill.get("accFillSz") or "0"))
         if not oid or quantity < 0 or quantity > requested:
@@ -773,7 +813,7 @@ def _reconcile_extreme_exit_results(client, ledger, spec):
             _extreme_exit_fill(ledger, lot.lot_id, oid, quantity,
                                Decimal(str(fill.get("avgPx") or fill.get("fillPx") or "0")))
             ledger.sync_take_profit_fill(lot.lot_id, max(
-                lot.original_size - lot.remaining_size, lot.original_size - requested + quantity))
+                lot.original_size - lot.remaining_size, max(Decimal(0), lot.original_size - requested) + quantity))
         if ledger.get_lot(lot.lot_id).remaining_size == 0:
             ledger.update_order_intent(f"exit:{lot.lot_id}", "filled", exchange_order_id=oid,
                                        detail=str(intent["detail"] or ""))
@@ -1041,6 +1081,116 @@ def _restore_unprotected_base_take_profits(
     return tuple(restored)
 
 
+def reconcile_virtual_position(client, ledger) -> None:
+    """Exchange exposure is authoritative; preserve protected/uncertain exits."""
+    positions = _confirmed_position_map(client)
+    for side in (PositionSide.LONG, PositionSide.SHORT):
+        actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
+        rows = list(ledger.connection.execute(
+            "SELECT lot_id FROM account05_lots WHERE side=? AND status<>'closed' "
+            "ORDER BY created_at_utc DESC,lot_id DESC", (side.value,)))
+        lots = [ledger.get_lot(row[0]) for row in rows]
+        covered = sum((lot.remaining_size for lot in lots), Decimal(0))
+        gap = max(Decimal(0), covered - actual)
+        if not gap:
+            continue
+        if actual and sum((lot.remaining_size for lot in lots if lot.kind == "base"), Decimal(0)) > actual:
+            raise OkxError(f"实际仓位{actual}不足以覆盖当前基础仓；保留旧仓保护并对账")
+        candidates = []
+        for lot in lots:
+            intent = ledger.order_intent(f"exit:{lot.lot_id}")
+            # Never resize an order that is still active or could have been sent.
+            if intent is not None and str(intent["status"]) not in {"rejected", "filled"}:
+                state = getattr(client, "_account05_exit_states", {}).get(lot.lot_id, "")
+                if state not in {"filled", "canceled", "mmp_canceled"}:
+                    if actual:
+                        continue
+                    oid = str(intent["exchange_order_id"] or "")
+                    if not oid:
+                        try:
+                            order = client.order(ACCOUNT05_INSTRUMENT,
+                                client_order_id=str(intent["client_order_id"]))
+                        except OkxError as exc:
+                            if not _order_does_not_exist(exc):
+                                raise
+                            ledger.update_order_intent(f"exit:{lot.lot_id}", "rejected",
+                                detail="交易所空仓且确认退出单不存在；仅清理虚拟记录")
+                            order = {"state": "canceled", "accFillSz": "0"}
+                        else:
+                            oid = str(order.get("ordId") or "")
+                            if not oid:
+                                raise ManualInventoryPending("退出单核验缺少订单号，暂不新开仓")
+                            ledger.update_order_intent(f"exit:{lot.lot_id}", "submitted",
+                                exchange_order_id=oid, detail=str(intent["detail"] or ""))
+                    else:
+                        order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+                    if str(order.get("state")) in {"live", "partially_filled"}:
+                        client.cancel_order(ACCOUNT05_INSTRUMENT, oid)
+                        order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+                    if str(order.get("state")) not in {"filled", "canceled", "mmp_canceled"}:
+                        raise ManualInventoryPending("空仓旧退出单未确认结束，暂不新开仓")
+                    # Defer to normal accounting if a new fill arrived during cancellation.
+                    previous = lot.original_size - lot.remaining_size
+                    if Decimal(str(order.get("accFillSz") or "0")) > previous:
+                        raise ManualInventoryPending("空仓旧退出单有新成交，下一轮先入账，再清理")
+            if lot.kind == "base" and actual:
+                continue  # Retained independent old-base protection.
+            if lot.take_profit_algo_id or lot.kind == "base":
+                if actual:
+                    continue
+                protection_ids = {lot.take_profit_algo_id} if lot.take_profit_algo_id else set()
+                for replacement in ledger.pending_take_profit_replacements():
+                    if str(replacement["lot_id"]) != lot.lot_id:
+                        continue
+                    protection_ids.add(str(replacement["old_order_id"]))
+                    if replacement["new_order_id"]:
+                        protection_ids.add(str(replacement["new_order_id"]))
+                    else:
+                        try:
+                            found = client.order(ACCOUNT05_INSTRUMENT,
+                                client_order_id=str(replacement["new_client_order_id"]))
+                        except OkxError as exc:
+                            if not _order_does_not_exist(exc):
+                                raise
+                        else:
+                            if not found.get("ordId"):
+                                raise ManualInventoryPending("旧保护替换请求缺少订单号，暂不新开仓")
+                            protection_ids.add(str(found["ordId"]))
+                protection_filled = Decimal(0)
+                for oid in protection_ids:
+                    if not oid:
+                        continue
+                    order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+                    if str(order.get("state")) in {"live", "partially_filled"}:
+                        client.cancel_order(ACCOUNT05_INSTRUMENT, oid)
+                        order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+                    if str(order.get("state")) not in {"filled", "canceled", "mmp_canceled"}:
+                        raise ManualInventoryPending("旧保护单未确认结束，暂不新开仓")
+                    protection_filled += Decimal(str(order.get("accFillSz") or "0"))
+                if protection_filled > lot.original_size - lot.remaining_size:
+                    updated = ledger.sync_take_profit_fill(lot.lot_id, protection_filled)
+                    gap -= lot.remaining_size - updated.remaining_size
+                    lot = updated
+                if not lot.remaining_size:
+                    ledger.abort_take_profit_replacement(lot.lot_id)
+                    continue
+            candidates.append(lot)
+        if sum((lot.remaining_size for lot in candidates), Decimal(0)) < gap:
+            raise ManualInventoryPending("差额涉及仍有效或未知的退出订单，先核验订单；不重复下单")
+        # Confirm zero a second time before retiring every virtual record.
+        if not actual:
+            fresh = _confirmed_position_map(client)
+            if abs(Decimal(str(fresh.get(side, {}).get("pos") or "0"))) != 0:
+                raise ManualInventoryPending("清理前交易所持仓发生变化，下一轮重新核对")
+        for lot in candidates:
+            if gap <= 0:
+                break
+            removed = min(gap, lot.remaining_size)
+            ledger.trim_virtual_quantity(lot.lot_id, removed,
+                f"交易所{side.value}实际持仓{actual}；虚拟数量校正{removed}张，非成交、不计利润")
+            gap -= removed
+
+
 def execute_account05_tick(*, client, ledger, settings, audit, one, five, fifteen,
                            one_hour=None) -> Account05TickResult:
     """Retry read-only inventory discrepancies without faulting or trading."""
@@ -1054,16 +1204,11 @@ def execute_account05_tick(*, client, ledger, settings, audit, one, five, fiftee
             # virtual lots to the exchange's aggregate position.
             _reconcile_extreme_exit_results(client, ledger, spec)
             _reconcile_addon_profit_limits(client, ledger, spec)
+            reconcile_virtual_position(client, ledger)
             import_manual_orders(client, ledger,
                 profit_points=Decimal(settings.addon_take_profit_points()),
                 require_fresh=False)
-            positions = _position_map(client.raw_snapshot())
-            for side in (PositionSide.LONG, PositionSide.SHORT):
-                actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
-                covered = sum((lot.remaining_size for lot in ledger.open_lots(side)), Decimal(0))
-                if actual and covered > actual:
-                    raise ManualInventoryPending(
-                        f"{side.value}本地批次{covered}超过实际仓位{actual}；差额{covered-actual}")
+            reconcile_virtual_position(client, ledger)
         return _execute_account05_tick(client=client, ledger=ledger,
             settings=settings, audit=audit, one=one, five=five,
             fifteen=fifteen, one_hour=one_hour)
@@ -1115,7 +1260,8 @@ def _execute_account05_tick(*, client: Account05LiveClient,
         if exchange_size <= 0:
             for stale in list(ledger.open_lots(flat_side)):
                 if stale.kind == "addon":
-                    ledger.delete_lot(stale.lot_id)
+                    ledger.trim_virtual_quantity(stale.lot_id, stale.remaining_size,
+                        "交易所该方向归零，清理虚拟残留；非成交、不计利润")
     combined_upl = sum(
         Decimal(str(row.get("upl") or "0")) for row in positions.values())
     equity_text = str((audit.get("usdt_balance") or {}).get("eq") or "0")
@@ -1462,12 +1608,8 @@ def _execute_account05_tick(*, client: Account05LiveClient,
                     "SELECT 1 FROM account05_lots WHERE side=? AND kind='addon' AND status='reconcile_required'",
                     (source_side.value,)).fetchone():
                 raise OkxError("极值原方向小单仍在隔离对账，不开反手")
+            reconcile_virtual_position(client, ledger)
             source_lots = [lot for lot in ledger.open_lots(source_side) if lot.kind == "addon"]
-            current_positions = _position_map(client.raw_snapshot())
-            covered = sum((lot.remaining_size for lot in ledger.open_lots(source_side)), Decimal(0))
-            actual = abs(Decimal(str(current_positions.get(source_side, {}).get("pos") or "0")))
-            if covered > actual:
-                raise ManualInventoryPending("极值方向本地批次超过实际仓位；先对账，不平仓或反手")
             quote = client.exit_quote(source_side.value) if hasattr(client, "exit_quote") else mark
             profitable = [lot for lot in source_lots
                           if _local_addon_net(lot, quote, spec) > 0

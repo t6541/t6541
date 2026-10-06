@@ -45,6 +45,11 @@ class Account05StateStore:
                 signal_id TEXT PRIMARY KEY,
                 evidence_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS account05_virtual_adjustments (
+                lot_id TEXT PRIMARY KEY, excluded_size TEXT NOT NULL,
+                reason TEXT NOT NULL, updated_at_utc TEXT NOT NULL,
+                closed_baseline TEXT NOT NULL DEFAULT '0'
+            );
             CREATE TABLE IF NOT EXISTS account05_lots (
                 lot_id TEXT PRIMARY KEY,
                 signal_id TEXT NOT NULL UNIQUE,
@@ -186,6 +191,10 @@ class Account05StateStore:
             );
             """
         )
+        adjustment_columns = {str(row["name"]) for row in self.connection.execute(
+            "PRAGMA table_info(account05_virtual_adjustments)")}
+        if "closed_baseline" not in adjustment_columns:
+            self.connection.execute("ALTER TABLE account05_virtual_adjustments ADD COLUMN closed_baseline TEXT NOT NULL DEFAULT '0'")
         columns = {str(row["name"]) for row in self.connection.execute(
             "PRAGMA table_info(account05_signal_latches)").fetchall()}
         if "last_anchor" not in columns:
@@ -478,6 +487,44 @@ class Account05StateStore:
         self.connection.commit()
         return self.get_lot(lot_id)
 
+    def virtual_excluded_size(self, lot_id: str, historical_closed: Decimal | None = None) -> Decimal:
+        row = self.connection.execute(
+            "SELECT excluded_size,closed_baseline FROM account05_virtual_adjustments WHERE lot_id=?",
+            (lot_id,)).fetchone()
+        if not row:
+            return Decimal(0)
+        excluded = Decimal(row[0])
+        if historical_closed is not None:
+            # Delayed close history confirms some of the earlier virtual correction.
+            # Absorb it, rather than counting that reduction twice.
+            excluded -= max(Decimal(0), historical_closed - Decimal(row[1]))
+        return max(Decimal(0), excluded)
+
+    def trim_virtual_quantity(self, lot_id: str, quantity: Decimal, reason: str) -> None:
+        """Retire unmatched virtual exposure, never fabricate a trade or PnL."""
+        lot = self.get_lot(lot_id)
+        if not quantity.is_finite() or quantity <= 0 or quantity > lot.remaining_size:
+            raise ValueError("invalid virtual quantity adjustment")
+        remaining = lot.remaining_size - quantity
+        original = lot.original_size - quantity
+        now = datetime.now(timezone.utc).isoformat()
+        excluded = self.virtual_excluded_size(lot_id) + quantity
+        previous = self.connection.execute(
+            "SELECT closed_baseline FROM account05_virtual_adjustments WHERE lot_id=?", (lot_id,)).fetchone()
+        baseline = str(previous[0]) if previous else str(lot.original_size - lot.remaining_size)
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO account05_virtual_adjustments VALUES (?,?,?,?,?)",
+                (lot_id, str(excluded), reason, now, baseline))
+            self.connection.execute(
+                """UPDATE account05_lots SET original_size=?,remaining_size=?,
+                status=?,closed_at_utc=?,updated_at_utc=?,take_profit_algo_id=
+                CASE WHEN ?=1 THEN NULL ELSE take_profit_algo_id END WHERE lot_id=?""",
+                (str(original), str(remaining), "closed" if remaining == 0 else lot.status,
+                 now if remaining == 0 else "", now, int(remaining == 0), lot_id))
+            if remaining == 0:
+                self.connection.execute("DELETE FROM account05_tp_replacements WHERE lot_id=?", (lot_id,))
+
     def sync_take_profit_fill(self, lot_id: str, cumulative_filled: Decimal) -> Account05Lot:
         """Set remaining size from the exchange cumulative fill quantity."""
         lot = self.get_lot(lot_id)
@@ -553,8 +600,9 @@ class Account05StateStore:
         return self.connection.execute(
             """SELECT l.*, entry.exchange_order_id AS entry_exchange_order_id,
             exit_intent.exchange_order_id AS exit_exchange_order_id,
-            exit_intent.detail AS exit_reason, review.evidence_json
+            COALESCE(exit_intent.detail,'') || CASE WHEN adjustment.reason IS NULL THEN '' ELSE '；' || adjustment.reason END AS exit_reason, review.evidence_json
             FROM account05_lots l
+            LEFT JOIN account05_virtual_adjustments adjustment ON adjustment.lot_id=l.lot_id
             LEFT JOIN account05_order_intents entry ON entry.signal_id=
                 CASE WHEN substr(l.signal_id,-3)='-T1'
                      THEN substr(l.signal_id,1,length(l.signal_id)-3) ELSE l.signal_id END
@@ -573,8 +621,9 @@ class Account05StateStore:
             """SELECT l.*,
             entry.exchange_order_id AS entry_exchange_order_id,
             exit_intent.exchange_order_id AS exit_exchange_order_id,
-            exit_intent.detail AS exit_reason
+            COALESCE(exit_intent.detail,'') || CASE WHEN adjustment.reason IS NULL THEN '' ELSE '；' || adjustment.reason END AS exit_reason
             FROM account05_lots l
+            LEFT JOIN account05_virtual_adjustments adjustment ON adjustment.lot_id=l.lot_id
             LEFT JOIN account05_order_intents entry ON entry.signal_id=
                 CASE WHEN substr(l.signal_id,-3)='-T1'
                      THEN substr(l.signal_id,1,length(l.signal_id)-3)
@@ -596,8 +645,9 @@ class Account05StateStore:
             """SELECT l.*,
             entry.exchange_order_id AS entry_exchange_order_id,
             exit_intent.exchange_order_id AS exit_exchange_order_id,
-            exit_intent.detail AS exit_reason
+            COALESCE(exit_intent.detail,'') || CASE WHEN adjustment.reason IS NULL THEN '' ELSE '；' || adjustment.reason END AS exit_reason
             FROM account05_lots l
+            LEFT JOIN account05_virtual_adjustments adjustment ON adjustment.lot_id=l.lot_id
             LEFT JOIN account05_order_intents entry ON entry.signal_id=
                 CASE WHEN substr(l.signal_id,-3)='-T1'
                      THEN substr(l.signal_id,1,length(l.signal_id)-3)
@@ -609,21 +659,19 @@ class Account05StateStore:
             (str(size), int(limit))).fetchall()
 
     def reconcile_side_flat(self, side: PositionSide) -> int:
-        """Close stale virtual lots after OKX confirms the side is flat."""
-        side_value = PositionSide(side).value
-        now = datetime.now(timezone.utc).isoformat()
+        """Retire stale virtual exposure without recording a fictitious fill."""
+        lot_ids = [str(row[0]) for row in self.connection.execute(
+            "SELECT lot_id FROM account05_lots WHERE side=? AND status<>'closed'",
+            (PositionSide(side).value,))]
+        for lot_id in lot_ids:
+            lot = self.get_lot(lot_id)
+            if lot.remaining_size:
+                self.trim_virtual_quantity(lot_id, lot.remaining_size,
+                    "交易所确认该方向空仓；清理虚拟残留，非成交、不计利润")
         with self.connection:
-            lot_ids = [str(row[0]) for row in self.connection.execute(
-                """SELECT lot_id FROM account05_lots
-                WHERE side=? AND status<>'closed'""", (side_value,)).fetchall()]
-            if lot_ids:
-                self.connection.execute(
-                    """UPDATE account05_lots SET remaining_size='0',status='closed',
-                    updated_at_utc=? WHERE side=? AND status<>'closed'""",
-                    (now, side_value))
-                self.connection.executemany(
-                    "DELETE FROM account05_tp_replacements WHERE lot_id=?",
-                    ((lot_id,) for lot_id in lot_ids))
+            self.connection.executemany(
+                "DELETE FROM account05_tp_replacements WHERE lot_id=?",
+                ((lot_id,) for lot_id in lot_ids))
         return len(lot_ids)
 
     def get_lot(self, lot_id: str) -> Account05Lot:

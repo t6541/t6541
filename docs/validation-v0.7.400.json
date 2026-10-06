@@ -1,0 +1,27 @@
+{
+  "version": "0.7.400",
+  "date": "2026-10-07",
+  "offline": true,
+  "offline_validation": {
+    "passed": 168,
+    "failed": 0,
+    "guard": "Socket connections and DNS blocked; exchange simulated",
+    "report": "/workspace/isolated/account05-v0.7.400.xml"
+  },
+  "changes": [
+    "Exchange-authoritative virtual budget; deterministic newest eligible virtual rows trimmed, profitable real reductions capped without blocking on a simple quantity gap",
+    "Persistent correction audit and flat-side cleanup, including manual/isolated/retired base records; corrections never fabricate fills or PnL",
+    "Delayed close history absorbs prior virtual corrections rather than double-reducing exposure; restart/refresh do not resurrect tombstoned records",
+    "Actual terminal and market-race fills alone determine realized PnL and recovery credits",
+    "Existing active/unknown exits and old-base protection preserved and reconciled before resizing/reusing exposure"
+  ],
+  "limitations": [
+    "Virtual allocation is deterministic; cannot establish a unique opening-to-closing exchange position ownership mapping",
+    "Active or unknown exit requests and invalid snapshots still require reconciliation; cannot treat missing data as flat",
+    "No exchange, desktop startup, live trading, production database or credentials used",
+    "Email sending capability unavailable; no email sent"
+  ],
+  "windows_release": {
+    "status": "pending"
+  }
+}

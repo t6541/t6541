@@ -9,30 +9,22 @@ from quantbot.account05_execution import import_manual_orders
 
 
 @pytest.mark.parametrize('direction', [1, -1])
-def test_feedback_quantity_gap_waits_without_clipping_or_trading(tmp_path, monkeypatch, direction):
+def test_exchange_quantity_wins_and_only_real_exit_is_credited(tmp_path, monkeypatch, direction):
     client, ledger, _, tick = setup_case(tmp_path, monkeypatch, direction)
     side = PositionSide.SHORT if direction == 1 else PositionSide.LONG
     price = '2722' if direction == 1 else '2670'
     lot = add_lot(client, ledger, 'manual', price, manual=True, side=side, size='1.88')
     client._position(side.value, -D('.04'))
-    for _ in range(2):
-        result = tick()
-        assert result.action == 'reconcile_wait'
-        assert '1.88' in result.reason and '1.84' in result.reason and '0.04' in result.reason
-        assert ledger.get_lot(lot.lot_id).remaining_size == D('1.88')
-        assert not client.entries
-        assert not client.take_profits
-        assert not [e for e in client.trace if e[0] == 'reduce']
-    # A delayed close record resolves the difference; the original extreme
-    # event was never consumed while waiting. It can now complete once.
-    client.history.append(dict(ordId='manual-close', clOrdId='', posSide=side.value,
-        side='buy' if direction == 1 else 'sell', state='filled',
-        accFillSz='.04', avgPx=str(client.price), cTime='1791330001000'))
     assert tick().action == 'submitted'
     assert ledger.get_lot(lot.lot_id).status == 'closed'
+    assert ledger.virtual_excluded_size(lot.lot_id) == D('.04')
     assert [e[2] for e in client.trace if e[0] == 'reduce'] == [D('1.84')]
-    assert len(client.entries) == 1
+    gross = abs(D(price) - client.price) * D('1.84') * D('.1')
+    fee = (D(price) + client.price) * D('1.84') * D('.1') * D('.0005')
+    assert ledger.recovery_pool()['total_net_profit'] == gross - fee
+    pool = ledger.recovery_pool()
     tick()
+    assert ledger.recovery_pool() == pool
     assert len(client.entries) == 1
 
 
