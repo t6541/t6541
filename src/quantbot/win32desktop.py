@@ -34,6 +34,7 @@ from .account05_execution import ACCOUNT05_INSTRUMENT, execute_account05_tick, i
 from .account05_live import Account05LiveClient
 from .account05_state import Account05StateStore, PositionSide
 from .account05_entry_review import review_summary
+from .manual_order_review import load_manual_order_history, manual_order_rows
 from .account05_review_view import (
     sort_recovery_pool_rows,
     sort_recovery_pool_by_structure_profit,
@@ -990,6 +991,28 @@ def _recovery_pool_structure_label(signal_id: str) -> str:
     return label if any("一" <= ch <= "龥" for ch in label) else "策略单"
 
 
+RECOVERY_POOL_REFRESH_LOCK = threading.Lock()
+
+
+def _request_recovery_pool_refresh() -> None:
+    # Sorting and the refresh button share one reconciliation path. Avoid
+    # concurrent SQLite/API refreshes when the user clicks repeatedly.
+    if not RECOVERY_POOL_REFRESH_LOCK.acquire(blocking=False):
+        return
+
+    def run():
+        try:
+            _recovery_pool_worker()
+        finally:
+            RECOVERY_POOL_REFRESH_LOCK.release()
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        RECOVERY_POOL_REFRESH_LOCK.release()
+        raise
+
+
 def _recovery_pool_worker() -> None:
     ledger = None
     try:
@@ -1138,7 +1161,7 @@ def _show_recovery_pool() -> None:
     if existing and user32.IsWindow(existing):
         user32.ShowWindow(existing, SW_MAXIMIZE)
         user32.SetForegroundWindow(existing)
-        threading.Thread(target=_recovery_pool_worker, daemon=True).start()
+        _request_recovery_pool_refresh()
         return
     hwnd = user32.CreateWindowExW(
         0, "CodexQuantBotWindow", f"解套利润池｜72个循环槽位｜v{APP_VERSION}",
@@ -1175,7 +1198,7 @@ def _show_recovery_pool() -> None:
         hwnd, "BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON,
         1338, 675, 120, 36, ID_RECOVERY_POOL_CLOSE)
     user32.ShowWindow(hwnd, SW_MAXIMIZE)
-    threading.Thread(target=_recovery_pool_worker, daemon=True).start()
+    _request_recovery_pool_refresh()
 
 
 def _manual_orders_worker() -> None:
@@ -1184,116 +1207,17 @@ def _manual_orders_worker() -> None:
         if credentials is None:
             raise OkxError("账户05尚未绑定API")
         api_client = Account05LiveClient(credentials, timeout=20)
-        rows = api_client.orders_history(ACCOUNT05_INSTRUMENT, limit=100)
-        # A just-filled market order can be absent from order history briefly;
-        # fills-history is the authoritative fallback for the dedicated list.
-        fills = []
-        # OKX caps one fills-history response at 100 rows. Walk older pages
-        # so a manual close is not hidden behind automatic fills.
-        after = ""
-        for _ in range(10):
-            page = api_client.fills_history(ACCOUNT05_INSTRUMENT, limit=100, after=after)
-            if not page:
-                break
-            fills.extend(page)
-            oldest = min((str(item.get("ts") or "") for item in page), default="")
-            if not oldest or oldest == after or len(page) < 100:
-                break
-            after = oldest
-        # Merge fills into order-history rows instead of discarding a fill
-        # merely because its order id is already present.  OKX order history
-        # often has cTime/uTime but no fillTime/avgPx; that used to leave a
-        # completed manual row without its real execution timestamp/price.
-        by_order = {str(r.get("ordId") or ""): r for r in rows if r.get("ordId")}
-        for fill in fills:
-            order_id = str(fill.get("ordId") or "")
-            existing = by_order.get(order_id)
-            if existing is not None:
-                for key, value in (("fillTime", fill.get("ts")),
-                                   ("fillPx", fill.get("fillPx")),
-                                   ("fillSz", fill.get("fillSz")),
-                                   ("reduceOnly", fill.get("reduceOnly")),
-                                   ("side", fill.get("side")),
-                                   ("posSide", fill.get("posSide"))):
-                    if value not in (None, ""):
-                        existing[key] = value
-                continue
-            if order_id:
-                rows.append({
-                    "ordId": fill.get("ordId"), "clOrdId": fill.get("clOrdId"),
-                    "state": "filled", "posSide": fill.get("posSide"),
-                    "side": fill.get("side"), "ordType": fill.get("execType") or "market",
-                    "accFillSz": fill.get("fillSz"), "avgPx": fill.get("fillPx"),
-                    "fillTime": fill.get("ts"), "reduceOnly": fill.get("reduceOnly", "false"),
-                })
-        table = []
-        manual_open_rows = []
-        manual_close_rows = []
-        for row in rows:
-            cid = str(row.get("clOrdId") or "").lower()
-            # Account05 automatic orders use durable A5* client-id prefixes;
-            # exclude them from the dedicated manual-order view.  Previously
-            # only the legacy qbot prefix was filtered, so every automatic
-            # entry was mislabeled as a manual order and confused timestamps.
-            if cid.startswith(("qbot", "a5en", "a5tp", "a5ex")):
-                continue
-            state = str(row.get("state") or "")
-            if state not in {"filled", "partially_filled", "live"}:
-                continue
-            reduce = str(row.get("reduceOnly")).lower() == "true"
-            # OKX fills-history may omit reduceOnly. Infer it from the
-            # position side and execution side so completed manual closes are
-            # still paired with their opening order.
-            if not reduce:
-                execution_side = str(row.get("side") or "").lower()
-                position_side = str(row.get("posSide") or "").lower()
-                reduce = ((position_side == "long" and execution_side == "sell")
-                          or (position_side == "short" and execution_side == "buy"))
-            # In net mode OKX may report posSide=net/empty.  Derive the
-            # logical direction from the execution side, reversing it for a
-            # reducing fill, so FIFO pairing still joins buy-open/sell-close
-            # and sell-open/buy-close correctly.
-            position_side = str(row.get("posSide") or "").lower()
-            if position_side in {"long", "short"}:
-                logical_side = position_side
-            elif reduce:
-                logical_side = "long" if execution_side == "sell" else "short"
-            else:
-                logical_side = "long" if execution_side == "buy" else "short"
-            pos = "多" if logical_side == "long" else "空"
-            ts = row.get("fillTime") or row.get("uTime") or row.get("cTime") or ""
-            when = datetime.fromtimestamp(int(ts) / 1000, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S") if str(ts).isdigit() else "—"
-            size_text = str(row.get("accFillSz") or row.get("sz") or "—")
-            price_text = str(row.get("avgPx") or row.get("fillPx") or row.get("px") or "—")
-            order_id = str(row.get("ordId") or "—")
-            item = {"when": when, "type": "手工减仓" if reduce else "手工开仓",
-                    "pos": pos, "ord_type": str(row.get("ordType") or "—"),
-                    "size": size_text, "price": price_text, "order_id": order_id,
-                    "state": state, "ts": int(ts) if str(ts).isdigit() else 0,
-                    "side": logical_side}
-            (manual_close_rows if reduce else manual_open_rows).append(item)
-        # Pair manual reductions FIFO by position side so the dedicated list
-        # exposes both the original entry and the actual closing fill.
-        manual_open_rows.sort(key=lambda x: x["ts"])
-        manual_close_rows.sort(key=lambda x: x["ts"])
-        for item in manual_open_rows:
-            close = next((x for x in manual_close_rows
-                          if x["side"] == item["side"] and x["ts"] >= item["ts"]), None)
-            table.append((item["when"], close["when"] if close else "—", item["type"], item["pos"], item["ord_type"],
-                          item["size"], item["price"],
-                          close["price"] if close else "—", item["order_id"],
-                          close["order_id"] if close else "—", item["state"]))
-            if close:
-                manual_close_rows.remove(close)
-        for item in manual_close_rows:
-            table.append((item["when"], "—", item["type"], item["pos"], item["ord_type"],
-                          item["size"], "—", item["price"], "—", item["order_id"], item["state"]))
+        orders, fills, warning = load_manual_order_history(api_client, ACCOUNT05_INSTRUMENT)
+        table = manual_order_rows(orders, fills, limit=20)
         HANDLES["manual_orders_raw_rows"] = table
         HANDLES["manual_orders_sort_column"] = int(HANDLES.get("manual_orders_sort_column", 0))
         _apply_manual_orders_sort()
-        _text(HANDLES.get("manual_orders_status", 0), f"手工订单{len(table)}条｜直接读取最近/归档历史｜不参与自动下单")
+        status = f"最近手工成交{len(table)}条（最多20条）｜平仓按方向/数量/时间FIFO匹配｜不参与自动下单"
+        if warning:
+            status += f"｜历史不完整：{warning}"
+        _text(HANDLES.get("manual_orders_status", 0), status)
     except Exception as exc:
-        _text(HANDLES.get("manual_orders_status", 0), f"手工订单读取失败：{exc}")
+        _text(HANDLES.get("manual_orders_status", 0), f"手工订单读取失败（保留上次结果）：{exc}")
 
 
 def _show_manual_orders() -> None:
@@ -1307,7 +1231,7 @@ def _show_manual_orders() -> None:
                                   kernel32.GetModuleHandleW(None), None)
     HANDLES["manual_orders_window"] = hwnd
     HANDLES["manual_orders_status"] = _create(hwnd, "STATIC", "正在读取手工订单……", SS_LEFT, 18, 12, 1040, 32)
-    HANDLES["manual_orders_table"] = _listview(hwnd, (("开仓时间", 170), ("平仓时间", 170), ("类型", 100), ("方向", 60), ("订单类型", 100), ("成交数量", 95), ("开仓价", 100), ("平仓价", 100), ("开仓订单", 210), ("平仓订单", 210), ("状态", 90)), 18, 55, 1040, 500)
+    HANDLES["manual_orders_table"] = _listview(hwnd, (("开仓时间", 170), ("平仓时间", 170), ("类型", 100), ("方向", 60), ("订单类型", 100), ("成交数量", 95), ("开仓价", 100), ("平仓价", 100), ("开仓订单", 210), ("平仓订单", 320), ("状态", 240)), 18, 55, 1040, 500)
     HANDLES["manual_orders_refresh"] = _create(hwnd, "BUTTON", "刷新", WS_TABSTOP | BS_PUSHBUTTON, 18, 570, 120, 34, ID_MANUAL_ORDERS_REFRESH)
     user32.ShowWindow(hwnd, SW_MAXIMIZE)
     threading.Thread(target=_manual_orders_worker, daemon=True).start()
@@ -4116,6 +4040,8 @@ def window_proc(hwnd, message, wparam, lparam):
                         HANDLES.get("recovery_pool_structure_highest_first", False))
                 HANDLES["recovery_pool_sort_column"] = notification.iSubItem
                 _apply_recovery_pool_time_sort()
+                if notification.iSubItem in (0, 1):
+                    _request_recovery_pool_refresh()
                 return 0
         except (ValueError, OSError):
             pass
@@ -4322,7 +4248,7 @@ def window_proc(hwnd, message, wparam, lparam):
         elif control_id == ID_MANUAL_ORDERS_REFRESH:
             threading.Thread(target=_manual_orders_worker, daemon=True).start()
         elif control_id == ID_RECOVERY_POOL_REFRESH:
-            threading.Thread(target=_recovery_pool_worker, daemon=True).start()
+            _request_recovery_pool_refresh()
         elif control_id == ID_RECOVERY_POOL_DELETE:
             table = HANDLES.get("recovery_pool_table", 0)
             selected = user32.SendMessageW(table, LVM_GETNEXTITEM, -1, LVNI_SELECTED)
@@ -4345,7 +4271,7 @@ def window_proc(hwnd, message, wparam, lparam):
                         if row is None:
                             raise KeyError(entry_order_id)
                         ledger.delete_lot(str(row[0]))
-                        threading.Thread(target=_recovery_pool_worker, daemon=True).start()
+                        _request_recovery_pool_refresh()
                     except Exception as exc:
                         _message(f"删除利润池记录失败：{exc}", error=True)
                     finally:
@@ -4369,7 +4295,7 @@ def window_proc(hwnd, message, wparam, lparam):
                         f"已开始新统计周期。\n利润池：{pool['pool_balance']:.6f}U\n"
                         f"20%储备：{pool['reserve_balance']:.6f}U\n历史逐笔记录已保留。",
                         "解套利润池已重置", 0x40)
-                    threading.Thread(target=_recovery_pool_worker, daemon=True).start()
+                    _request_recovery_pool_refresh()
                 except Exception as exc:
                     _message(f"解套利润池重置失败：{exc}", error=True)
                 finally:

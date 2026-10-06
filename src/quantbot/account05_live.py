@@ -135,8 +135,19 @@ class Account05LiveClient(OkxLiveAggressiveAdapter):
             pass
         return rows
 
+    def order_history_page(self, inst_id: str = "ETH-USDT-SWAP", *,
+                           archive: bool = False, after: str = "",
+                           limit: int = 100) -> list[dict]:
+        """Read a single history page without suppressing audit failures."""
+        payload = {"instType": "SWAP", "instId": inst_id,
+                   "limit": str(min(max(limit, 1), 100))}
+        if after:
+            payload["after"] = str(after)
+        path = "/api/v5/trade/orders-history" + ("-archive" if archive else "")
+        return self._request("GET", path, payload, private=True).get("data", [])
+
     def fills_history(self, inst_id: str = "ETH-USDT-SWAP", *, limit: int = 100,
-                      after: str = "", before: str = "") -> list[dict]:
+                      after: str = "", before: str = "", strict: bool = False) -> list[dict]:
         payload = {"instType": "SWAP", "instId": inst_id,
                    "limit": str(min(max(limit, 1), 100))}
         if after:
@@ -148,7 +159,8 @@ class Account05LiveClient(OkxLiveAggressiveAdapter):
             rows.extend(self._request("GET", "/api/v5/trade/fills-history",
                                       payload, private=True).get("data", []))
         except Exception:
-            pass
+            if strict:
+                raise
         return rows
 
     def cancel_order(self, inst_id: str, order_id: str) -> dict:

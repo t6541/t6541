@@ -4,11 +4,11 @@ GitHub 仓库：t6541/t6541。导入基线：CodexQuantBot-v0.7.393-Source-Hando
 
 ## 开发边界
 
-本阶段只进行离线源码开发与测试，不连接交易所、不启动桌面程序或自动实盘。GitHub 同步属于源码管理。禁止提交交易凭据、运行数据库、日志和构建缓存。新功能需求尚待用户提供；此次导入未修改交易逻辑。
+本阶段只进行离线源码开发与测试，不连接交易所、不启动桌面程序或自动实盘。GitHub 同步属于源码管理。禁止提交交易凭据、运行数据库、日志和构建缓存。v0.7.394完善利润池排序刷新和手工成交历史展示，未修改交易逻辑。
 
 ## 环境与验证
 
-使用 Python 3.12。项目依赖 numpy、pandas；定向测试还需要 pytest。交接包未提供离线依赖包；当前机器缺少 pytest。需要联网安装依赖时，先确认用户允许依赖下载；这不授权连接交易所。
+使用 Python 3.12。项目依赖 numpy、pandas；定向测试还需要 pytest。交接包未提供离线依赖包；用户已允许从Python官方仓库下载测试依赖，当前机器已安装pytest到 /workspace/isolated/offline-test-deps。使用该路径时设置PYTHONPATH。这不授权连接交易所。
 
 依赖已备齐后，在仓库根目录运行：
 
@@ -16,17 +16,17 @@ GitHub 仓库：t6541/t6541。导入基线：CodexQuantBot-v0.7.393-Source-Hando
 python -m pytest -q tests/test_account05_signals.py tests/test_account05_state.py
 ```
 
-迁移检查只直接执行了信号文件中不需 pytest 夹具的 12 个用例，全部通过；18 个含夹具的信号用例未运行，状态测试未运行。该结果不是完整 pytest 验证。完整回归、桌面行为、实盘行为和 Windows EXE 均未验证。
+迁移检查只直接执行了信号文件中不需 pytest 夹具的 12 个用例，全部通过；18 个含夹具的信号用例未运行，状态测试未运行。该结果不是完整 pytest 验证。后续已补装pytest并在屏蔽Python socket网络连接与DNS解析的运行器中完成账户05信号/状态52项测试。当前功能定向验证共75项通过，额外执行/策略回归47项通过、20项失败，与未修改0.7.393基线失败项完全相同，见docs/validation-v0.7.394.json；Windows原生界面、实盘行为和Windows EXE仍需单独验证。
 
 ## 待处理事项
 
-- APP_VERSION 和当前 spec 名称为 0.7.393。
-- pyproject.toml 项目版本为 0.7.338。
-- version_info.txt 数字 filevers/prodvers 为 0.7.390，FileVersion 为 0.7.393，ProductVersion 为 0.7.362。
+- v0.7.394已同步APP_VERSION、pyproject.toml、当前spec及version_info.txt各版本字段。
 - README.md 和 configs/update-manifest.json 包含历史说明，不能据此断言当前交易能力或最新发布版本。
 - 包内无 automatic-fault.log，无法复查旧电脑最新实盘故障。
-- 收到明确的新需求后再改代码、更新版本并测试；此次不生成新版本。
+- 手工历史的平仓关联为按方向/数量/时间FIFO推算，交易所通常不返回开仓到平仓的唯一父子关系；不可将推算标为交易所确认。
 
 ## Windows 构建
 
 在 Windows 64 位 Python 3.12 环境准备构建依赖，更新各处版本后运行 build-exe.ps1。该脚本执行 PyInstaller，不启动 EXE。当前云主机为 Linux，不能使用此处原生 PyInstaller 生成可验证的 Windows EXE。构建后记录 SHA-256，不启动实盘。
+
+GitHub Actions已提供手动Windows构建流程（Build Windows EXE），尚未执行验证。当前会话GitHub API返回Forbidden，需在仓库Actions页面手动运行并下载产物。

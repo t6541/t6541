@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-APP_VERSION = "0.7.393"
+APP_VERSION = "0.7.394"
 
 SIMPLE_EXECUTION_RULES = (
     ("末端全记录", "1m / 5m / 15m / 1H",

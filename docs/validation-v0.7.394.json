@@ -1,0 +1,50 @@
+{
+  "version": "0.7.394",
+  "date": "2026-10-06",
+  "offline": true,
+  "network_guard": "Python socket connection and DNS denied during tests",
+  "targeted_suite": {
+    "passed": 75,
+    "failed": 0,
+    "files": [
+      "test_account05_signals.py",
+      "test_account05_state.py",
+      "test_account05_review_view.py",
+      "test_manual_order_review.py"
+    ]
+  },
+  "additional_execution_strategy_suite": {
+    "passed": 47,
+    "failed": 20,
+    "same_failures_on_unmodified_0_7_393": true,
+    "failures": [
+      "tests.test_account05_live_execution.test_addon_only_exchange_position_does_not_suppress_missing_long_base",
+      "tests.test_account05_live_execution.test_clear_trend_starts_both_fixed_base_sides_at_six_tenths",
+      "tests.test_account05_live_execution.test_eighteen_open_addons_is_capacity_wait_not_twenty_percent_stop",
+      "tests.test_account05_live_execution.test_empty_account_opens_neutral_hedge_and_one_full_tp_per_side",
+      "tests.test_account05_live_execution.test_full_base_tp_reopens_even_when_same_side_addon_position_remains",
+      "tests.test_account05_live_execution.test_large_extreme_closes_profitable_same_direction_addon_then_opens_point_one_percent_reverse",
+      "tests.test_account05_live_execution.test_large_extreme_opens_point_one_percent_reverse_without_releasable_source_lot[-1-short]",
+      "tests.test_account05_live_execution.test_large_extreme_opens_point_one_percent_reverse_without_releasable_source_lot[1-long]",
+      "tests.test_account05_live_execution.test_large_extreme_reverse_is_not_blocked_by_ordinary_addon_slot_limit",
+      "tests.test_account05_live_execution.test_loss_recovery_first_rebuilds_missing_short_at_capped_twelve_tenths",
+      "tests.test_account05_live_execution.test_missing_long_rebuilds_from_actual_short_total[unclear-expected_size0]",
+      "tests.test_account05_live_execution.test_missing_long_rebuilds_from_actual_short_total[up-expected_size1]",
+      "tests.test_account05_live_execution.test_staged_rebuild_second_half_waits_for_new_precise_shape",
+      "tests.test_account05_live_execution.test_twenty_percent_combined_loss_freezes_every_new_order",
+      "tests.test_account05_live_execution.test_zero_exchange_position_quarantines_stale_unprotected_base_and_rebuilds",
+      "tests.test_account05_strategy.test_addon_limits_count_side_margin_and_combined_floating_loss",
+      "tests.test_account05_strategy.test_each_addon_uses_fixed_point_zero_one_contracts",
+      "tests.test_account05_strategy.test_extreme_rotation_uses_point_one_percent_margin",
+      "tests.test_account05_strategy.test_fixed_addon_contracts_do_not_change_with_mark_price",
+      "tests.test_account05_strategy.test_recovery_slot_budget_is_separate_from_fixed_small_order"
+    ]
+  },
+  "limitations": [
+    "Windows native UI not executed",
+    "Windows EXE not built or launched",
+    "No exchange access or live trading",
+    "FIFO is inferred matching, not exchange-confirmed parent order linkage",
+    "Historical API pagination is bounded; unmatched rows remain explicitly unmatched"
+  ]
+}

@@ -1,0 +1,51 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install build and test dependencies
+        run: python -m pip install --index-url https://pypi.org/simple ".[dev]"
+      - name: Test changed behavior without exchange connections
+        shell: python
+        run: |
+          import socket
+          import pytest
+          def blocked(*args, **kwargs):
+              raise RuntimeError("Network blocked during offline tests")
+          socket.socket.connect = blocked
+          socket.socket.connect_ex = blocked
+          socket.create_connection = blocked
+          socket.getaddrinfo = blocked
+          raise SystemExit(pytest.main([
+              "-q", "tests/test_account05_signals.py", "tests/test_account05_state.py",
+              "tests/test_account05_review_view.py", "tests/test_manual_order_review.py"
+          ]))
+      - name: Build EXE without launching it
+        shell: pwsh
+        run: |
+          ./build-exe.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed: $LASTEXITCODE" }
+          $exe = Get-ChildItem dist/CodexQuantBot-v*-Slots-Base-Switch.exe
+          if (@($exe).Count -ne 1) { throw "Expected exactly one EXE" }
+          $hash = Get-FileHash $exe.FullName -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $($exe.Name)" | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexQuantBot-Windows-EXE
+          path: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
