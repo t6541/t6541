@@ -11,3 +11,11 @@
 定向151项离线验证；实际结果与Windows发布验证见docs/validation-v0.7.398.json。普通升级只更新GitHub源码与交接文档，不需要用户重复发布云环境。v0.7.397构建已成功，但用户在构建期间追加基础仓停用，最终交付以v0.7.398为准。
 
 开发未连接交易所，未启动软件或实盘。禁止提交凭据、生产数据库、运行日志和EXE。Windows测试通过后自动构建原始EXE到GitHub Releases，再下载核对SHA-256和AMD64 PE格式，不启动成品。
+
+## 发布核验完成
+
+Windows运行37511319034成功，构建提交703e67a04a18809fcb8def5d694a96a60426993a。原始EXE下载：https://github.com/t6541/t6541/releases/download/v0.7.398/CodexQuantBot-v0.7.398-Slots-Base-Switch.exe 。已重新下载验证SHA-256和AMD64 PE格式，大小31661467字节，未启动程序。
+
+SHA-256：77e80db502b7c1a8b2648ecf6309528ec48ce18b1a71c977f1662c4460ae9d4c
+
+额外执行/策略47通过、20失败，与导入基线失败ID一致；没有放宽旧测试断言。

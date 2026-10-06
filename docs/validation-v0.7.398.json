@@ -38,7 +38,15 @@
     "Additional old strategy/execution failures are tracked separately"
   ],
   "windows_release": {
-    "status": "pending",
-    "launched": false
+    "status": "success",
+    "run_id": 37511319034,
+    "build_commit": "703e67a04a18809fcb8def5d694a96a60426993a",
+    "url": "https://github.com/t6541/t6541/releases/download/v0.7.398/CodexQuantBot-v0.7.398-Slots-Base-Switch.exe",
+    "size_bytes": 31661467,
+    "sha256": "77e80db502b7c1a8b2648ecf6309528ec48ce18b1a71c977f1662c4460ae9d4c",
+    "downloaded_and_hash_verified": true,
+    "PE_architecture": "AMD64",
+    "launched": false,
+    "windows_test_step": "success; Linux targeted suite count recorded separately"
   }
 }
