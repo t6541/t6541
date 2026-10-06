@@ -16,3 +16,7 @@
 首次Actions运行37471148707在测试阶段失败：Windows默认cp1252读取UTF-8源码导致4项UnicodeDecodeError，71项通过，打包步骤未执行。已明确指定UTF-8，Linux离线75项复验通过，并模拟Windows默认cp1252读取环境验证21项通过；仍需实际Windows构建完成证明。工作流现支持main相关源码/测试/构建文件推送后自动打包，保留手动运行入口。
 
 API诊断：云环境网络代理在HTTPS CONNECT阶段返回403，配置允许域名未包含api.github.com；已将该域名加入环境配置草稿，尚需环境设置保存/应用后再验证。GitHub自身Actions授权还未验证，不应仅凭代理拒绝访问就认定缺少GitHub权限。当前会话无用户电脑远程控制工具。
+
+## 后续Windows构建结果
+
+修复后的运行37472678728（源码提交746a5bf）已成功，公开GitHub汇总页面可确认Success及1个产物：CodexQuantBot-Windows-EXE，29.9 MB。此结果替代上面的未构建状态。当前会话尚未下载或启动EXE，未核验EXE本身SHA-256；公开页面的产物摘要属于上传归档而不是内部EXE。API代理域名配置仍待应用。

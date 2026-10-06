@@ -42,9 +42,19 @@
   },
   "limitations": [
     "Windows native UI not executed",
-    "Windows EXE not built or launched",
     "No exchange access or live trading",
     "FIFO is inferred matching, not exchange-confirmed parent order linkage",
-    "Historical API pagination is bounded; unmatched rows remain explicitly unmatched"
-  ]
+    "Historical API pagination is bounded; unmatched rows remain explicitly unmatched",
+    "Windows EXE build succeeded; executable not downloaded, independently inspected or launched"
+  ],
+  "windows_build": {
+    "run_id": 37472678728,
+    "commit": "746a5bff8effbcb4bb17bf8ef4a45430d646d915",
+    "status": "success",
+    "artifact": "CodexQuantBot-Windows-EXE",
+    "artifact_size": "29.9 MB",
+    "artifact_archive_digest": "sha256:0ea0853d63af88fdfc751559f2d4a88aa3af661005bd24bd683268c09f63a830",
+    "evidence": "Public GitHub run summary reports Success and one artifact; private logs and artifact binary not downloaded in this session",
+    "executable_launched": false
+  }
 }
