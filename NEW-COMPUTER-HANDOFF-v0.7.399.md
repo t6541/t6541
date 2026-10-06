@@ -10,4 +10,12 @@
 
 155项定向离线测试通过（网络连接与DNS禁用，模拟交易所）；包括新增4项数量等待与恢复、自动订单身份及已知部分退出优先对账测试。开发未连接交易所，未启动桌面程序或实盘，未改变用户电脑/API/生产数据库。
 
-Windows EXE由已有Actions流程推送后自动构建并发布原始EXE。待构建完成后下载验证SHA-256及AMD64 PE格式，不运行成品。普通软件升级无需再次发布云环境。
+Windows EXE由已有Actions流程推送后自动构建并发布原始EXE。构建成功，已下载验证SHA-256及AMD64 PE格式，未运行成品。普通软件升级无需再次发布云环境。
+
+## 发布验证
+
+Windows运行37522081284成功，测试/构建/原始EXE发布步骤均成功；构建提交cc4504f4b8bd14235aadb3c565a5c0d2218fe8be。
+
+下载：https://github.com/t6541/t6541/releases/download/v0.7.399/CodexQuantBot-v0.7.399-Slots-Base-Switch.exe
+
+SHA-256：0eea55bb9529ebe682f6c5076abb63267ffeaaac1b0442399199d48d1dd862ed；大小31664242字节。已重新下载核验，未启动。

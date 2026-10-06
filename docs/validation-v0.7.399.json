@@ -17,9 +17,18 @@
     "Actual user production database and automatic-fault.log unavailable; cannot identify the specific affected lots",
     "Persistent unresolved differences remain waiting; never silently authorize reversal",
     "Existing base protection retained; new base entries remain disabled",
-    "Native Windows build pending; no exchange connection, desktop startup or live trading performed"
+    "Windows build succeeded; no exchange connection, desktop startup or live trading performed"
   ],
   "windows_release": {
-    "status": "pending"
+    "status": "success",
+    "run_id": 37522081284,
+    "url": "https://github.com/t6541/t6541/releases/download/v0.7.399/CodexQuantBot-v0.7.399-Slots-Base-Switch.exe",
+    "size_bytes": 31664242,
+    "sha256": "0eea55bb9529ebe682f6c5076abb63267ffeaaac1b0442399199d48d1dd862ed",
+    "downloaded_and_hash_verified": true,
+    "PE_architecture": "AMD64",
+    "launched": false,
+    "build_commit": "cc4504f4b8bd14235aadb3c565a5c0d2218fe8be",
+    "windows_test_step": "success"
   }
 }
