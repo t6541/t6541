@@ -11,3 +11,9 @@
 离线定向119项通过（含20项新增极值专项模拟），额外执行/策略测试47通过、20失败，与导入基线失败测试ID相同；旧规则断言未削弱。验证见 docs/validation-v0.7.396.json。源码推送触发Windows构建，成功后发布GitHub Releases原始EXE，不用ZIP；构建结果及SHA-256须查证后记录。
 
 未连接交易所，未启动桌面或实盘。未经当轮明确授权，不读取生产凭据或执行实盘下单、撤单、改单、平仓、杠杆变更。
+
+## 构建完成
+
+Windows运行37503720284成功；构建提交34409c63a8d50dcd0cd5810f2c2f9f3787bab261。已发布原始EXE（31662702字节）：https://github.com/t6541/t6541/releases/download/v0.7.396/CodexQuantBot-v0.7.396-Slots-Base-Switch.exe 。云端重新下载并验证SHA-256和AMD64 PE格式，未启动程序。
+
+SHA-256：583d19f2037140da6c28307adbc954ed6660828121d8ed70398a197ac3291b0f

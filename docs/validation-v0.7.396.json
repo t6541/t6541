@@ -28,7 +28,15 @@
     "Market execution may slip after the strict profit gate; live fills not validated"
   ],
   "windows_release": {
-    "status": "pending",
-    "launched": false
+    "status": "success",
+    "run_id": 37503720284,
+    "build_commit": "34409c63a8d50dcd0cd5810f2c2f9f3787bab261",
+    "url": "https://github.com/t6541/t6541/releases/download/v0.7.396/CodexQuantBot-v0.7.396-Slots-Base-Switch.exe",
+    "size_bytes": 31662702,
+    "sha256": "583d19f2037140da6c28307adbc954ed6660828121d8ed70398a197ac3291b0f",
+    "downloaded_and_hash_verified": true,
+    "PE_architecture": "AMD64",
+    "launched": false,
+    "windows_test_step": "success; count reported from Linux offline run, detailed Windows logs not downloaded"
   }
 }
