@@ -31,7 +31,11 @@
     "20 pre-existing additional execution/strategy test failures remain"
   ],
   "windows_release": {
-    "status": "pending",
-    "launched": false
+    "status": "success",
+    "run_id": 37510410001,
+    "build_commit": "f8614ee481d81eeca1113e18bb2c9c6ab6a68488",
+    "launched": false,
+    "artifact_downloaded_and_verified": false,
+    "superseded_by": "0.7.398 user requested base retirement during build"
   }
 }

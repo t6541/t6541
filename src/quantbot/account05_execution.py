@@ -24,7 +24,7 @@ from .account05_strategy import (
     extreme_rotation_entry_plan, take_profit_price, take_profit_price_by_points, addon_profit_points,
     addon_take_profit_threshold, addon_take_profit_unlocked,
 )
-from .live_account_settings import LiveAccountSettings
+from .live_account_settings import LiveAccountSettings, ACCOUNT05_BASE_ENTRIES_ENABLED
 from .okx import OkxError
 
 
@@ -774,6 +774,8 @@ def _submit_entry(client: Account05LiveClient, ledger: Account05StateStore, *,
                   base_take_profit_pct: Decimal | None = None,
                   entry_evidence: dict | None = None,
                   resume_existing: bool = False) -> tuple[str, ...]:
+    if kind == "base" and not ACCOUNT05_BASE_ENTRIES_ENABLED:
+        raise OkxError("账户05基础仓功能已停用，禁止新建、补仓或重建基础仓")
     client_id = _client_id("A5EN", signal_id)
     claimed = ledger.claim_order_intent(
         signal_id=signal_id, client_order_id=client_id, side=side,
@@ -1040,7 +1042,7 @@ def execute_account05_tick(*, client: Account05LiveClient,
     # reports the combined-loss permission code.  Current account05 settings
     # disable this limit by setting the percentage to zero.
     loss_limit = config.operating_capital_usdt * config.max_combined_floating_loss_pct
-    base_rebuild_enabled = settings.base_rebuild_enabled()
+    base_rebuild_enabled = ACCOUNT05_BASE_ENTRIES_ENABLED
     contract = audit["instrument"]
     mark = Decimal(str(audit["market"].get("markPx") or audit["market"].get("last") or "0"))
     spec = ContractSpec(

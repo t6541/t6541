@@ -2193,14 +2193,7 @@ def _set_live_control_state(slot: str, state: str) -> None:
         "stopped": "已停止", "starting": "正在启动", "running": "运行中",
         "stopping": "正在停止", "faulted": "故障停止",
     }[state]
-    suffix = ""
-    try:
-        enabled = LiveAccountSettings(
-            LIVE_WORKSPACE / "profiles" / slot / "state.sqlite3"
-        ).base_rebuild_enabled()
-        suffix = f"｜基础仓建立={'开启' if enabled else '关闭'}"
-    except Exception:
-        suffix = "｜基础仓建立=状态读取失败"
+    suffix = "｜账户05基础仓=已停用（旧仓保护保留）"
     _text(HANDLES.get("live_main_status", 0),
           f"实盘控制台：{bound_count}/5 个账户已绑定｜{LIVE_PROFILES[slot]['label']}状态={state_text}{suffix}")
 
@@ -2217,14 +2210,7 @@ def _live_status_text(slot: str, value: str) -> None:
         "stopped": "已停止", "starting": "正在启动", "running": "运行中",
         "stopping": "正在停止", "faulted": "故障停止",
     }[LIVE_ACCOUNT_STATES[slot]]
-    suffix = ""
-    try:
-        enabled = LiveAccountSettings(
-            LIVE_WORKSPACE / "profiles" / slot / "state.sqlite3"
-        ).base_rebuild_enabled()
-        suffix = f"｜基础仓建立={'开启' if enabled else '关闭'}"
-    except Exception:
-        suffix = "｜基础仓建立=状态读取失败"
+    suffix = "｜账户05基础仓=已停用（旧仓保护保留）"
     _text(HANDLES.get("live_main_status", 0),
           f"实盘控制台：{bound_count}/5 个账户已绑定｜{LIVE_PROFILES[slot]['label']}状态={state_text}{suffix}")
 
@@ -2796,7 +2782,7 @@ def _account05_automatic_worker(slot: str = "clone_research") -> None:
             long_hist, long_open = ledger.base_audit_state(PositionSide.LONG)
             short_hist, short_open = ledger.base_audit_state(PositionSide.SHORT)
             base_audit_text = (
-                f"基础仓审计库={strategy_path}｜"
+                f"基础仓已停用｜旧仓核对库={strategy_path}｜"
                 f"多单历史={'有' if long_hist else '无'}当前={'有' if long_open else '缺失'}｜"
                 f"空单历史={'有' if short_hist else '无'}当前={'有' if short_open else '缺失'}")
             _live_status_text(
@@ -2917,18 +2903,8 @@ def _save_account05_settings(slot: str = "clone_research") -> None:
 
 
 def _toggle_account05_base_rebuild(slot: str = "clone_research") -> None:
-    try:
-        settings = LiveAccountSettings(LIVE_WORKSPACE / "profiles" / slot / "state.sqlite3")
-        enabled = settings.set_base_rebuild_enabled(not settings.base_rebuild_enabled())
-        _text(HANDLES.get(f"live_{slot}_base_toggle", 0),
-              ("基础仓：已开启（点击关闭）" if enabled
-               else "基础仓：已关闭（点击开启）"))
-        run_state = LIVE_ACCOUNT_STATES.get(slot, "stopped")
-        effect = ("下一轮自动执行立即生效" if run_state == "running"
-                  else "当前自动执行未运行；启动账户05后生效")
-        _live_status_text(slot, f"{LIVE_PROFILES[slot]['label']}基础仓建立已{'开启' if enabled else '关闭'}；{effect}。")
-    except Exception as exc:
-        _live_status_text(slot, f"基础仓开关修改失败：{exc}")
+    # Compatibility for old queued UI commands; this cannot re-enable bases.
+    _live_status_text(slot, "基础仓功能已停用，不再新建、补仓或重建；旧持仓保护保留。")
 
 
 def _account05_signal_worker() -> None:
@@ -3175,17 +3151,15 @@ def _show_live_slot_window(slot: str) -> None:
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 675, 532, 64, 30)
         _create(hwnd, "BUTTON", f"保存{spec['label']}参数", WS_TABSTOP | BS_PUSHBUTTON,
                 544, 490, 170, 34, ID_ACCOUNT05_SAVE_SETTINGS)
-        _create(hwnd, "STATIC", "基础仓控制", SS_LEFT, 720, 466, 120, 24)
+        _create(hwnd, "STATIC", "基础仓已停用", SS_LEFT, 720, 466, 150, 24)
         HANDLES[f"live_{slot}_base_toggle"] = _create(
-            hwnd, "BUTTON",
-            ("基础仓：已开启（点击关闭）" if settings.base_rebuild_enabled()
-                   else "基础仓：已关闭（点击开启）"),
-            WS_TABSTOP | BS_PUSHBUTTON, 720, 490, 250, 38, ID_ACCOUNT05_BASE_TOGGLE)
+            hwnd, "STATIC", "不再新建、补仓或重建基础仓",
+            SS_LEFT, 720, 490, 250, 38)
         _create(hwnd, "BUTTON", "刷新趋势/信号", WS_TABSTOP | BS_PUSHBUTTON,
                 730, 450, 188, 34, ID_ACCOUNT05_REFRESH_SIGNALS)
     if execution_enabled:
         _create(hwnd, "STATIC",
-                ("账户05按5秒快速扫描；基础仓服务器止盈保留，小单MA5止盈需软件运行。" if slot == "clone_research" else
+                ("账户05基础仓已停用；旧仓止盈保护保留，小单MA5止盈需软件运行。" if slot == "clone_research" else
                  "点击启动后按10秒正常轮询；当前策略来源和下单数量会写入运行状态。"),
                 SS_LEFT, 22, 440, 570, 34)
         HANDLES[f"live_child_{slot}_toggle"] = _create(
@@ -4651,7 +4625,7 @@ def main() -> None:
         WS_TABSTOP | BS_PUSHBUTTON, 1143, 676, 131, 34, ID_LIVE_ACCOUNT05_TOGGLE)
     HANDLES["live_main_clone_research_detail"] = _create(
         hwnd, "STATIC", "正在读取账户05只读审计状态……", SS_LEFT, 20, 714, 1254, 62)
-    _create(hwnd, "STATIC", "账户05基础仓｜独立0.01张小单｜解套利润池多空槽位容量可在账户05参数中调整，普通槽位每笔0.02张；极值反手按独立规则。",
+    _create(hwnd, "STATIC", "账户05基础仓已停用｜独立0.01张小单｜解套利润池多空槽位容量可在账户05参数中调整，普通槽位每笔0.02张；极值反手按独立规则。",
             SS_LEFT, 20, 780, 1050, 28)
 
     HANDLES["main_trade_panel_status"] = _create(

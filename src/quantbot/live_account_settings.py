@@ -23,6 +23,8 @@ DEFAULT_ACCOUNT05_LONG_SLOTS = "60"
 DEFAULT_ACCOUNT05_SHORT_SLOTS = "60"
 DEFAULT_ACCOUNT05_EXTREME_CONTRACTS = "0.03"
 DEFAULT_ACCOUNT05_SLOT_CONTRACTS = "0.02"
+# Product policy: new base exposure is retired. Old positions retain their TPs.
+ACCOUNT05_BASE_ENTRIES_ENABLED = False
 MINIMUM_ADDON_TAKE_PROFIT_POINTS = Decimal("10.00")
 STRATEGY_SOURCES = frozenset({"shared", "account"})
 OVERRIDABLE_SECTIONS = frozenset({"strategy", "risk"})
@@ -172,11 +174,11 @@ class LiveAccountSettings:
         return extreme, slot
 
     def base_rebuild_enabled(self) -> bool:
-        return self._get("account05_base_rebuild_enabled", "0") == "1"
+        return ACCOUNT05_BASE_ENTRIES_ENABLED
 
     def set_base_rebuild_enabled(self, enabled: bool) -> bool:
-        self._set("account05_base_rebuild_enabled", "1" if enabled else "0")
-        return bool(enabled)
+        self._set("account05_base_rebuild_enabled", "0")
+        return False
 
     def strategy_source(self) -> str:
         value = self._get("strategy_source", "shared")

@@ -1,0 +1,44 @@
+{
+  "version": "0.7.398",
+  "date": "2026-10-07",
+  "offline": true,
+  "offline_validation": {
+    "passed": 151,
+    "failed": 0,
+    "files": [
+      "test_account05_signals.py",
+      "test_account05_state.py",
+      "test_account05_review_view.py",
+      "test_manual_order_review.py",
+      "test_live_aggressive_adapter.py",
+      "test_extreme_profit_sweep.py",
+      "test_account05_exit_reconciliation.py",
+      "test_account05_base_retired.py",
+      "test_live_account_settings.py"
+    ],
+    "guard": "Socket connections and DNS blocked, exchange simulated"
+  },
+  "changes": [
+    "Account05 base entries disabled by fixed policy independent of legacy settings; entry helper hard-rejects base kind before claim or POST",
+    "UI enable button replaced by disabled feature description; old queued toggle cannot enable",
+    "Existing base positions retain independent TP protection and reconciliation; no automatic replacement base exposure after closure",
+    "Includes v0.7.397 reproduced canceled-addon false account fault fix and v0.7.396 whole-group confirmed extreme reversal"
+  ],
+  "additional_execution_strategy_suite": {
+    "passed": 47,
+    "failed": 20,
+    "same_failure_test_ids_as_imported_baseline": true,
+    "baseline_report": "docs/validation-v0.7.394.json"
+  },
+  "limitations": [
+    "User automatic-fault.log not provided; actual affected lot cannot be uniquely identified from screenshot",
+    "No exchange connection, native desktop startup or live trading performed",
+    "Existing base positions are not force-closed or canceled by development; their protection remains",
+    "Unowned historical manual close links remain FIFO inference",
+    "Additional old strategy/execution failures are tracked separately"
+  ],
+  "windows_release": {
+    "status": "pending",
+    "launched": false
+  }
+}
