@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_DOWN
 import hashlib
+import json
 from itertools import combinations
 import time
 from datetime import datetime, timezone
 import pandas as pd
 
 from .account05_live import Account05LiveClient
+from .manual_order_review import load_manual_order_history, manual_order_inventory
 from .account05_entry_review import entry_context
 from .base_pullback import base_pullback_confirmation
 from .account05_signals import Account05Signals, ExtremeRotationTrigger, evaluate_account05_signals
@@ -26,64 +28,136 @@ from .live_account_settings import LiveAccountSettings
 from .okx import OkxError
 
 
+def manual_exit_owners(ledger: Account05StateStore) -> dict[str, str]:
+    """Use durable per-lot exits before any inferred FIFO history pairing."""
+    links = {}
+    for row in ledger.connection.execute(
+            """SELECT l.entry_order_id,l.signal_id,l.take_profit_algo_id,i.exchange_order_id
+            FROM account05_lots l LEFT JOIN account05_order_intents i
+            ON i.signal_id='exit:' || l.lot_id"""):
+        for oid in (row["take_profit_algo_id"], row["exchange_order_id"]):
+            if oid:
+                links[str(oid)] = (str(row["entry_order_id"]) if str(row["signal_id"]).startswith("manual:")
+                                  else str(row["entry_order_id"]).rsplit("-", 1)[0])
+    for row in ledger.connection.execute(
+            "SELECT f.order_id,l.entry_order_id,l.signal_id FROM account05_extreme_exit_fills f "
+            "JOIN account05_lots l ON f.lot_id=l.lot_id"):
+        links[str(row["order_id"])] = (str(row["entry_order_id"]) if str(row["signal_id"]).startswith("manual:")
+                                      else str(row["entry_order_id"]).rsplit("-", 1)[0])
+    return links
+
+
 def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStore,
                          *, inst_id: str | None = None,
-                         profit_points: Decimal = Decimal("10")) -> int:
-    """Import recent filled manual entries into the virtual-lot audit book.
+                         profit_points: Decimal = Decimal("10"),
+                         require_fresh: bool = False) -> int:
+    """Rebuild manual virtual quantities from cached, quantity-aware history.
 
-    QuantBot client ids use the ``qbot`` prefix. Other filled entries are
-    retained as manual addon lots so the profit-pool list can audit them.
+    Never reapply an old close to a newer entry. Preserve actual managed exit
+    intents, and check aggregate position coverage before repairing old rows.
+    No exchange write is performed here.
     """
-    imported = 0
     inst_id = inst_id or ACCOUNT05_INSTRUMENT
-    history = client.orders_history(inst_id, limit=100)
-    for order in history:
-        if str(order.get("state")) not in {"filled", "partially_filled"} or str(order.get("reduceOnly")).lower() == "true":
+    if (not require_fresh and time.monotonic() - getattr(client, "_manual_synced_at", -60) < 30):
+        return 0
+    cached = list(ledger.connection.execute(
+        "SELECT payload_json FROM account05_manual_order_history"))
+    if require_fresh or not cached:
+        if hasattr(client, "order_history_page") and hasattr(client, "fills_history"):
+            orders, fills, warning = load_manual_order_history(client, inst_id, max_pages=100)
+            if warning:
+                raise OkxError(f"手工订单历史不完整，禁止据此接管或极值反手：{warning}")
+        else:
+            orders, fills = client.orders_history(inst_id, limit=100), []
+    else:
+        orders, fills = client.orders_history(inst_id, limit=100), []
+    records = {}
+    for item in cached:
+        payload = json.loads(item["payload_json"])
+        records[payload["key"]] = payload
+    fields = ("ordId", "clOrdId", "side", "posSide", "state", "ordType", "accFillSz",
+              "avgPx", "fillPx", "fillSz", "fillTime", "cTime", "uTime", "reduceOnly",
+              "execType", "ts", "billId", "tradeId", "instId")
+    for kind, items in (("order", orders), ("fill", fills)):
+        for item in items:
+            oid = str(item.get("ordId") or "")
+            if not oid:
+                continue
+            filtered = {k: item[k] for k in fields if k in item}
+            suffix = str(item.get("tradeId") or item.get("billId") or
+                         hashlib.sha256(json.dumps(filtered, sort_keys=True).encode()).hexdigest())
+            key = f"{kind}:{oid}" + (f":{suffix}" if kind == "fill" else "")
+            if key in records and kind == "order":
+                previous = records[key]["row"]
+                old_quantity = Decimal(str(previous.get("accFillSz") or "0"))
+                new_quantity = Decimal(str(filtered.get("accFillSz") or "0"))
+                # Recent/archive sources may overlap or arrive out of order.
+                # Never regress cumulative fills to an older snapshot.
+                old_time = int(previous.get("uTime") or previous.get("cTime") or "0")
+                new_time = int(filtered.get("uTime") or filtered.get("cTime") or "0")
+                if new_quantity < old_quantity or (new_quantity == old_quantity and new_time < old_time):
+                    filtered = {**filtered, **previous}
+                else:
+                    filtered = {**previous, **filtered}
+            records[key] = dict(key=key, kind=kind, row=filtered)
+    all_orders = [r["row"] for r in records.values() if r["kind"] == "order"]
+    all_fills = [r["row"] for r in records.values() if r["kind"] == "fill"]
+    entries, _ = manual_order_inventory(all_orders, all_fills, exit_owners=manual_exit_owners(ledger))
+    plans = {}
+    for oid, entry in entries.items():
+        if not entry["manual"]:
             continue
-        order_id = str(order.get("ordId") or "").strip()
-        client_id = str(order.get("clOrdId") or "").strip().lower()
-        if not order_id or client_id.startswith(("qbot", "a5en", "a5tp", "a5ex")):
+        signal = f"manual:{oid}"
+        # A submitted/unknown/filled strategy exit owns this lot's quantity.
+        # Never reopen it from missing or lagging exchange history.
+        if ledger.order_intent(f"exit:{signal}") is not None:
             continue
-        side = "long" if str(order.get("posSide")) == "long" else "short"
-        price = Decimal(str(order.get("avgPx") or order.get("fillPx") or "0"))
-        size = Decimal(str(order.get("accFillSz") or order.get("sz") or "0"))
-        if price <= 0 or size <= 0:
-            continue
-        signal_id = f"manual:{order_id}"
-        exists = ledger.connection.execute(
-            "SELECT 1 FROM account05_lots WHERE signal_id=?", (signal_id,)).fetchone()
-        if exists:
-            continue
-        tp = take_profit_price_by_points(price, side, max(profit_points, Decimal("10")), Decimal("0.01"))
-        ledger.record_filled_lot(
-            lot_id=signal_id, signal_id=signal_id, side=side, kind="addon",
-            entry_order_id=order_id, entry_price=price, size=size,
-            take_profit_price=tp, take_profit_pct=Decimal("0"))
-        imported += 1
-    # Manual reduce-only fills are audit records. Match them FIFO to open
-    # manual lots without submitting or amending any order.
-    for order in history:
-        if str(order.get("state")) not in {"filled", "partially_filled"} or str(order.get("reduceOnly")).lower() != "true":
-            continue
-        side = "long" if str(order.get("posSide")) == "long" else "short"
-        price = Decimal(str(order.get("avgPx") or order.get("fillPx") or "0"))
-        size = Decimal(str(order.get("accFillSz") or order.get("sz") or "0"))
-        if price <= 0 or size <= 0:
-            continue
-        row = ledger.connection.execute(
-            "SELECT * FROM account05_lots WHERE signal_id LIKE 'manual:%' AND side=? AND status<>'closed' ORDER BY created_at_utc LIMIT 1",
-            (side,)).fetchone()
-        if row is None:
-            continue
-        lot_id = str(row["lot_id"])
-        exit_id = str(order.get("ordId") or "manual-reduce")
-        ledger.record_addon_exit_accounting(
-            lot_id, exit_order_id=exit_id, exit_price=price,
-            local_gross_pnl=Decimal("0"), local_fee_estimate=Decimal("0"),
-            local_net_pnl=Decimal("0"))
+        plans[signal] = entry
+    positions = _position_map(client.raw_snapshot())
+    projected = {side: Decimal(0) for side in (PositionSide.LONG, PositionSide.SHORT)}
+    for lot in ledger.open_lots():
+        if lot.lot_id not in plans:
+            projected[lot.side] += lot.remaining_size
+    for entry in plans.values():
+        side = PositionSide(entry["logical"])
+        projected[side] += entry["qty"] - entry["closed"]
+    for side, quantity in projected.items():
+        actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
+        if actual and quantity > actual:
+            raise OkxError(f"手工历史/批次数量{quantity}超过{side.value}实际仓位{actual}；先对账，不反手")
+    imported = 0
+    for signal, entry in plans.items():
+        side = PositionSide(entry["logical"])
+        actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
+        remaining = entry["qty"] - entry["closed"] if actual else Decimal(0)
+        price = entry["cost"] / entry["qty"]
+        created = datetime.fromtimestamp(entry["ts"] / 1000, timezone.utc).isoformat()
+        closed_at = (datetime.fromtimestamp(entry["close_ts"] / 1000, timezone.utc).isoformat()
+                     if entry["close_ts"] and not remaining else "")
+        existing = ledger.connection.execute(
+            "SELECT 1 FROM account05_lots WHERE lot_id=?", (signal,)).fetchone()
+        if existing is None:
+            ledger.record_filled_lot(lot_id=signal, signal_id=signal, side=side, kind="addon",
+                entry_order_id=str(entry["row"]["ordId"]), entry_price=price, size=entry["qty"],
+                take_profit_price=take_profit_price_by_points(price, side, max(profit_points, Decimal("10")), Decimal("0.01")),
+                take_profit_pct=Decimal(0))
+            imported += 1
+        # Recompute from cumulative quantities, not incremental polling. This
+        # also repairs the old importer that marked an entire lot closed.
         ledger.connection.execute(
-            "UPDATE account05_lots SET status='closed', remaining_size=0 WHERE lot_id=?", (lot_id,))
-        ledger.connection.commit()
+            """UPDATE account05_lots SET original_size=?,remaining_size=?,entry_price=?,
+            status=?,created_at_utc=?,closed_at_utc=?,exit_order_id=?,exit_price=?,
+            local_gross_pnl='',local_fee_estimate='',local_net_pnl='',take_profit_algo_id=NULL,
+            updated_at_utc=? WHERE lot_id=?""",
+            (str(entry["qty"]), str(remaining), str(price),
+             "tp_live" if remaining else "closed", created, closed_at,
+             "、".join(entry["ids"]), str(entry["close_cost"] / entry["closed"]) if entry["closed"] else "",
+             datetime.now(timezone.utc).isoformat(), signal))
+    with ledger.connection:
+        ledger.connection.executemany(
+            "INSERT OR REPLACE INTO account05_manual_order_history VALUES (?,?)",
+            [(key, json.dumps(payload, ensure_ascii=False)) for key, payload in records.items()])
+    client._manual_synced_at = time.monotonic()
     return imported
 
 
@@ -507,6 +581,11 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
     for lot in ledger.open_lots():
         if lot.kind != "addon":
             continue
+        if ledger.connection.execute(
+                "SELECT 1 FROM account05_extreme_targets t JOIN account05_extreme_rotation_events e "
+                "ON t.event_key=e.event_key WHERE t.lot_id=? AND e.status='claimed'",
+                (lot.lot_id,)).fetchone():
+            continue
         signal_id = f"exit:{lot.lot_id}"
         intent = ledger.order_intent(signal_id)
         if (intent is None or str(intent["status"]) != "submitted"
@@ -561,11 +640,141 @@ def _reconcile_addon_profit_limits(client, ledger, spec: ContractSpec) -> set[Po
     return closed_sides
 
 
+def _extreme_exit_fill(ledger, lot_id, order_id, quantity, price):
+    if quantity <= 0:
+        return
+    if price <= 0:
+        raise OkxError("极值平仓成交价缺失，先对账，不反手")
+    with ledger.connection:
+        ledger.connection.execute(
+            "INSERT OR REPLACE INTO account05_extreme_exit_fills VALUES (?,?,?,?)",
+            (lot_id, order_id, str(quantity), str(price)))
+
+
+def _book_extreme_fills(ledger, lot, spec):
+    rows = list(ledger.connection.execute(
+        "SELECT * FROM account05_extreme_exit_fills WHERE lot_id=? ORDER BY order_id", (lot.lot_id,)))
+    total = sum((Decimal(r["filled_size"]) for r in rows), Decimal(0))
+    if not total:
+        return
+    if total > lot.original_size:
+        raise OkxError("极值平仓累计成交超过批次原数量，先对账")
+    price = sum((Decimal(r["filled_size"]) * Decimal(r["exit_price"]) for r in rows), Decimal(0)) / total
+    result = AddonCloseResult("、".join(str(r["order_id"]) for r in rows), price)
+    net = _book_closed_addon(ledger, replace(lot, remaining_size=total), result, spec)
+    if net > 0:
+        ledger.credit_recovery_profit(net, credit_key=f"extreme:{lot.lot_id}")
+
+
+def _close_extreme_winner(client, ledger, lot, spec, points, mark, reason):
+    """Confirm a whole remaining lot's reduction before permitting reversal."""
+    signal = f"exit:{lot.lot_id}"
+    intent = ledger.order_intent(signal)
+    if intent is not None:
+        oid = str(intent["exchange_order_id"] or "")
+        if not oid:
+            try:
+                found = client.order(ACCOUNT05_INSTRUMENT, client_order_id=str(intent["client_order_id"]))
+            except OkxError as exc:
+                if not _order_does_not_exist(exc):
+                    raise
+                # A read-only 51603 is positive evidence that the durable ID
+                # has no order. Do not resend without this reconciliation.
+                ledger.update_order_intent(signal, "claimed", detail=reason)
+            else:
+                oid = str(found.get("ordId") or "")
+                if not oid:
+                    raise OkxError("极值平仓意图对账缺少订单号")
+                ledger.update_order_intent(signal, "submitted", exchange_order_id=oid, detail=reason)
+        if oid:
+            order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+            if str(order.get("state")) in {"live", "partially_filled"}:
+                client.cancel_order(ACCOUNT05_INSTRUMENT, oid)
+                order = client.order(ACCOUNT05_INSTRUMENT, order_id=oid)
+            if str(order.get("state")) not in {"filled", "canceled", "mmp_canceled"}:
+                raise OkxError("极值平仓旧订单未确认结束，先对账，不反手")
+            intent = ledger.order_intent(signal)
+            requested = Decimal(str(intent["requested_size"]))
+            quantity = Decimal(str(order.get("accFillSz") or "0"))
+            if quantity < 0 or quantity > requested:
+                raise OkxError("极值平仓旧订单成交数量异常，先对账，不反手")
+            _extreme_exit_fill(ledger, lot.lot_id, oid, quantity,
+                               Decimal(str(order.get("avgPx") or order.get("fillPx") or "0")))
+            total_closed = lot.original_size - requested + quantity
+            if total_closed > lot.original_size or total_closed < 0:
+                raise OkxError("极值平仓累计数量异常")
+            # This is cumulative and therefore safe after partial-fill polling.
+            lot = ledger.sync_take_profit_fill(lot.lot_id, max(
+                lot.original_size - lot.remaining_size, total_closed))
+            if lot.remaining_size:
+                client_id = _client_id("A5EX", f"{signal}:after:{oid}:{lot.remaining_size}")
+                with ledger.connection:
+                    ledger.connection.execute(
+                        """UPDATE account05_order_intents SET status='claimed',
+                        client_order_id=?,exchange_order_id=NULL,requested_size=?,detail=? WHERE signal_id=?""",
+                        (client_id, str(lot.remaining_size), reason, signal))
+            else:
+                ledger.update_order_intent(signal, "filled", exchange_order_id=oid, detail=reason)
+    if lot.remaining_size:
+        quote = client.exit_quote(lot.side.value) if hasattr(client, "exit_quote") else mark
+        if (not addon_take_profit_unlocked(lot.entry_price, quote, lot.side, points)
+                or _local_addon_net(lot, quote, spec) <= 0):
+            raise OkxError("极值待平订单实时报价已不满足严格止盈点数；未平订单保留，不开反手")
+        result = _close_addon_on_ma5(client, ledger, lot, reason)
+        if result.order_id:
+            _extreme_exit_fill(ledger, lot.lot_id, result.order_id, lot.remaining_size, result.exit_price)
+    if ledger.get_lot(lot.lot_id).status != "closed":
+        raise OkxError("极值盈利订单未确认全部平仓，不开反手")
+    _book_extreme_fills(ledger, lot, spec)
+    return str(ledger.get_lot(lot.lot_id).lot_id)
+
+
+def _reconcile_extreme_exit_results(client, ledger, spec):
+    """Recover exit fills with GET before any history/position-coverage check."""
+    closed_sides = set()
+    rows = list(ledger.connection.execute(
+        "SELECT DISTINCT t.lot_id FROM account05_extreme_targets t JOIN account05_extreme_rotation_events e "
+        "ON t.event_key=e.event_key WHERE e.status='claimed'"))
+    for row in rows:
+        lot = ledger.get_lot(str(row[0]))
+        intent = ledger.order_intent(f"exit:{lot.lot_id}")
+        if intent is None:
+            continue
+        oid = str(intent["exchange_order_id"] or "")
+        try:
+            fill = client.order(ACCOUNT05_INSTRUMENT, **(
+                {"order_id": oid} if oid else {"client_order_id": str(intent["client_order_id"])}))
+        except OkxError as exc:
+            if not oid and _order_does_not_exist(exc):
+                continue
+            raise
+        oid = str(fill.get("ordId") or oid)
+        requested = Decimal(str(intent["requested_size"]))
+        quantity = Decimal(str(fill.get("accFillSz") or "0"))
+        if not oid or quantity < 0 or quantity > requested:
+            raise OkxError("极值平仓恢复对账数量/订单号异常")
+        if quantity:
+            _extreme_exit_fill(ledger, lot.lot_id, oid, quantity,
+                               Decimal(str(fill.get("avgPx") or fill.get("fillPx") or "0")))
+            ledger.sync_take_profit_fill(lot.lot_id, max(
+                lot.original_size - lot.remaining_size, lot.original_size - requested + quantity))
+        if ledger.get_lot(lot.lot_id).remaining_size == 0:
+            ledger.update_order_intent(f"exit:{lot.lot_id}", "filled", exchange_order_id=oid,
+                                       detail=str(intent["detail"] or ""))
+            _book_extreme_fills(ledger, lot, spec)
+            closed_sides.add(lot.side)
+        else:
+            ledger.update_order_intent(f"exit:{lot.lot_id}", "submitted", exchange_order_id=oid,
+                                       detail=str(intent["detail"] or ""))
+    return closed_sides
+
+
 def _submit_entry(client: Account05LiveClient, ledger: Account05StateStore, *,
                   signal_id: str, side: PositionSide, kind: str, size: Decimal,
                   spec: ContractSpec, config: Account05Config,
                   base_take_profit_pct: Decimal | None = None,
-                  entry_evidence: dict | None = None) -> tuple[str, ...]:
+                  entry_evidence: dict | None = None,
+                  resume_existing: bool = False) -> tuple[str, ...]:
     client_id = _client_id("A5EN", signal_id)
     claimed = ledger.claim_order_intent(
         signal_id=signal_id, client_order_id=client_id, side=side,
@@ -578,7 +787,31 @@ def _submit_entry(client: Account05LiveClient, ledger: Account05StateStore, *,
             and "pre-order server-time synchronization GET failed" in
             str(intent["detail"] or ""))
         if not retryable_rejection:
-            return ()
+            if not resume_existing or intent is None:
+                return ()
+            client_id = str(intent["client_order_id"])
+            size = Decimal(str(intent["requested_size"]))
+            existing_lot = ledger.connection.execute(
+                "SELECT 1 FROM account05_lots WHERE lot_id=?", (signal_id + "-T1",)).fetchone()
+            if str(intent["status"]) == "filled" and existing_lot:
+                return (str(intent["exchange_order_id"]),)
+            try:
+                recovered = client.order(ACCOUNT05_INSTRUMENT, client_order_id=client_id)
+            except OkxError as exc:
+                if not _order_does_not_exist(exc) or str(intent["status"]) in {"submitted", "filled"}:
+                    raise
+                # Only a confirmed absent order may reuse the same durable ID.
+            else:
+                order_id = str(recovered.get("ordId") or "")
+                if not order_id:
+                    raise OkxError("极值反手对账缺少订单号")
+                fill = _wait_for_fill(client, order_id)
+                if Decimal(str(fill.get("accFillSz") or "0")) != size:
+                    raise OkxError("极值反手对账数量不符")
+                ledger.update_order_intent(signal_id, "filled", exchange_order_id=order_id)
+                return (order_id,) + _protect_fill(
+                    client, ledger, signal_id=signal_id, side=side, kind=kind,
+                    fill=fill, spec=spec, config=config, base_take_profit_pct=base_take_profit_pct)
     if entry_evidence is not None:
         ledger.record_entry_review(signal_id, entry_evidence)
     try:
@@ -822,6 +1055,7 @@ def execute_account05_tick(*, client: Account05LiveClient,
 
     def evidence(source, reason):
         return {**context, "source": source, "reason": reason}
+    recovered_extreme_sides = _reconcile_extreme_exit_results(client, ledger, spec)
     snapshot = client.raw_snapshot()
     positions = _position_map(snapshot)
     # Reconcile manually flattened directions before any capacity or signal
@@ -866,7 +1100,7 @@ def execute_account05_tick(*, client: Account05LiveClient,
             legacy_sides.add(lot.side)
     _reprice_base_take_profits_after_position_change(
         client, ledger, config, legacy_sides)
-    addon_closed_sides: set[PositionSide] = set()
+    addon_closed_sides: set[PositionSide] = set(recovered_extreme_sides)
     base_closed_sides: set[PositionSide] = set()
     order_ids: list[str] = []
 
@@ -1009,7 +1243,7 @@ def execute_account05_tick(*, client: Account05LiveClient,
     event_bar = str(one.sort_values("date").drop_duplicates("date", keep="last").iloc[-1]["date"])
     profitable = sorted((item for item in exit_candidates if item[2] > 0),
                         key=lambda item: item[2], reverse=True)
-    if profitable:
+    if profitable and signals.extreme_rotation is None:
         winner = profitable[0]
         if ledger.claim_addon_exit_event(winner[0].side, f"profit:{event_bar}"):
             order_id = _submit_addon_profit_limit(
@@ -1169,31 +1403,48 @@ def execute_account05_tick(*, client: Account05LiveClient,
         if (extreme_risk_allowed and reverse_plan.contracts >= spec.min_size
                 and ledger.claim_extreme_rotation_event(
                     event_key, extreme.direction)):
-            source_lots = [lot for lot in ledger.open_lots(source_side)
-                           if lot.kind == "addon"
-                           and ledger.order_intent(f"exit:{lot.lot_id}") is None]
-            profitable = sorted(
-                ((lot, _local_addon_net(lot, mark, spec)) for lot in source_lots
-                 if (_local_addon_net(lot, mark, spec) > 0
-                     and addon_take_profit_unlocked(
-                         lot.entry_price, mark, lot.side,
-                         config.addon_take_profit_points))),
-                key=lambda item: item[1], reverse=True)
-            changed_sides: set[PositionSide] = set(addon_closed_sides)
-            for lot, _estimated in profitable:
-                order_id = _submit_addon_profit_limit(
-                    client, ledger, lot, mark, spec, config.addon_take_profit_points,
-                    f"{extreme.reason}；极值点仅提交合格盈利小单止盈")
-                if order_id:
-                    order_ids.append(order_id)
-
+            if hasattr(client, "orders_history"):
+                import_manual_orders(client, ledger, profit_points=config.addon_take_profit_points,
+                                     require_fresh=True)
+            if ledger.connection.execute(
+                    "SELECT 1 FROM account05_lots WHERE side=? AND kind='addon' AND status='reconcile_required'",
+                    (source_side.value,)).fetchone():
+                raise OkxError("极值原方向小单仍在隔离对账，不开反手")
+            source_lots = [lot for lot in ledger.open_lots(source_side) if lot.kind == "addon"]
+            current_positions = _position_map(client.raw_snapshot())
+            covered = sum((lot.remaining_size for lot in ledger.open_lots(source_side)), Decimal(0))
+            actual = abs(Decimal(str(current_positions.get(source_side, {}).get("pos") or "0")))
+            if covered > actual:
+                raise OkxError("极值方向本地批次超过实际仓位；先对账，不平仓或反手")
+            quote = client.exit_quote(source_side.value) if hasattr(client, "exit_quote") else mark
+            profitable = [lot for lot in source_lots
+                          if _local_addon_net(lot, quote, spec) > 0
+                          and addon_take_profit_unlocked(lot.entry_price, quote, lot.side,
+                                                         config.addon_take_profit_points)]
             signal_id = (f"extreme-rotation:{'bottom-long' if extreme.direction > 0 else 'top-short'}:"
                          f"{reverse_side.value}:{extreme.anchor_time}")
+            targets, signal_id = ledger.freeze_extreme_targets(event_key, profitable, signal_id)
+            changed_sides: set[PositionSide] = set(addon_closed_sides)
+            for lot_id, target_size in targets:
+                lot = ledger.get_lot(lot_id)
+                if lot.remaining_size > target_size or lot.status == "reconcile_required":
+                    raise OkxError("极值待平批次数量/状态变化，先对账，不反手")
+                _close_extreme_winner(client, ledger, lot, spec, config.addon_take_profit_points,
+                                     mark, f"{extreme.reason}；极值先平全部合格盈利小单")
+                changed_sides.add(source_side)
+                fills = ledger.connection.execute(
+                    "SELECT order_id FROM account05_extreme_exit_fills WHERE lot_id=?", (lot_id,))
+                order_ids.extend(str(row[0]) for row in fills)
+            # The frozen set survives restart; never open the reverse merely
+            # because a pending/unknown exit was filtered out of candidates.
+            if any(ledger.get_lot(lot_id).status != "closed" for lot_id, _ in targets):
+                raise OkxError("极值盈利单未全部确认平仓，不开反手")
+
             submitted = _submit_entry(
                 client, ledger, signal_id=signal_id, side=reverse_side,
                 kind="addon", size=reverse_plan.contracts,
                 spec=spec, config=config,
-                entry_evidence=evidence("大极值反手", extreme.reason))
+                entry_evidence=evidence("大极值反手", extreme.reason), resume_existing=True)
             order_ids.extend(submitted)
             changed_sides.add(reverse_side)
             _reprice_base_take_profits_after_position_change(
@@ -1201,10 +1452,14 @@ def execute_account05_tick(*, client: Account05LiveClient,
             ledger.complete_extreme_rotation_event(event_key)
             return Account05TickResult(
                 "submitted",
-                f"{extreme.reason}；提交盈利小单限价止盈{len(profitable)}笔（无盈利单也不阻止反手）；"
+                f"{extreme.reason}；已确认先平全部合格盈利小单{len(targets)}笔（无合格盈利单也可反手）；"
                 "亏损小单保持持仓；"
                 f"反手{reverse_side.value}固定={reverse_plan.contracts}张；计入同侧槽位",
                 tuple(order_ids))
+
+    if ledger.connection.execute(
+            "SELECT 1 FROM account05_extreme_rotation_events WHERE status='claimed' AND plan_recorded=1").fetchone():
+        return Account05TickResult("observe", "极值平仓/反手组尚未完成，等待原事件恢复并对账")
 
     # Thirty-six per side is a reusable concurrent-slot ceiling, never a fill target. A shape may
     # submit once on its false->true edge and must disappear before rearming.

@@ -276,7 +276,8 @@ def test_manual_window_worker_passes_latest_20_to_current_sort():
         Account05LiveClient=lambda *args, **kwargs: object(),
         ACCOUNT05_INSTRUMENT="ETH-USDT-SWAP",
         load_manual_order_history=lambda *args: (data, [], ""),
-        manual_order_rows=manual_order_rows, HANDLES={"manual_orders_sort_column": 1},
+        manual_order_rows=manual_order_rows, _manual_order_close_links=lambda: {},
+        HANDLES={"manual_orders_sort_column": 1},
         _apply_manual_orders_sort=lambda: calls.append("sort"),
         _text=lambda *args: calls.append(args[1]))
     _desktop_function("_manual_orders_worker", namespace)()

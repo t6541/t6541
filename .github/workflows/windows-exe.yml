@@ -46,7 +46,7 @@ jobs:
           raise SystemExit(pytest.main([
               "-q", "tests/test_account05_signals.py", "tests/test_account05_state.py",
               "tests/test_account05_review_view.py", "tests/test_manual_order_review.py",
-              "tests/test_live_aggressive_adapter.py"
+              "tests/test_live_aggressive_adapter.py", "tests/test_extreme_profit_sweep.py"
           ]))
       - name: Build EXE without launching it
         shell: pwsh
@@ -65,5 +65,5 @@ jobs:
           $version = (python -c "from quantbot.version import APP_VERSION; print(APP_VERSION)").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Cannot read application version" }
           $exe = Get-Item "dist/CodexQuantBot-v$version-Slots-Base-Switch.exe"
-          gh release create "v$version" $exe.FullName dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CodexQuantBot v$version" --notes "Windows EXE with SHA-256 checksum. Built after offline account05 tests. Application not launched; no exchange or trading operations performed. Manual close linkage is inferred FIFO matching."
+          gh release create "v$version" $exe.FullName dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CodexQuantBot v$version" --notes "Windows EXE with SHA-256 checksum. Built after offline account05 tests. Application not launched; no exchange or trading operations performed. Extreme reversal waits for all qualifying manual and automatic addon exits to be confirmed. Base rules preserved. Known manual exits use ledger links; others remain FIFO inference."
           if ($LASTEXITCODE -ne 0) { throw "Release upload failed" }

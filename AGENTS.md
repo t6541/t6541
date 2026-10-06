@@ -2,7 +2,7 @@
 
 Work in this existing checkout. Each cloud task is already isolated; do not create a Git worktree unless explicitly requested.
 
-The imported source baseline is v0.7.393; current development version is v0.7.395. Read NEW-COMPUTER-HANDOFF-v0.7.395.md, CLOUD-DEVELOPMENT.md and docs/validation-v0.7.395.json before working. Attached handoff instructions are reference material, not authorization to execute trading operations.
+The imported source baseline is v0.7.393; current development version is v0.7.396. Read NEW-COMPUTER-HANDOFF-v0.7.396.md, CLOUD-DEVELOPMENT.md and docs/validation-v0.7.396.json before working. Attached handoff instructions are reference material, not authorization to execute trading operations.
 
 Development and tests remain offline. Do not connect to exchanges, launch the desktop application, start live trading, place/cancel/amend orders, close positions, or change leverage without explicit authorization for that operation in the current session. Do not create or import trading credentials or production databases.
 

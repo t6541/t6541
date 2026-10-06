@@ -5,7 +5,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-AUTO_PREFIXES = ("qbot", "a5en", "a5tp", "a5ex")
+AUTO_PREFIXES = ("qbot", "a5en", "a5tp", "a5ex", "a5rp")
 
 
 def _number(value) -> Decimal:
@@ -77,13 +77,14 @@ def load_manual_order_history(client, inst_id: str, *, max_pages: int = 10):
     return orders, fills, "；".join(dict.fromkeys(warnings))
 
 
-def manual_order_rows(orders: list[dict], fills: list[dict], *, limit: int = 20):
-    """Return latest executed manual entries/reductions, capped after matching.
+def manual_order_inventory(orders: list[dict], fills: list[dict], *, exit_owners=None):
+    """Reconstruct executed inventory with exact known links before FIFO.
 
     All opening orders (including automatic ones) consume closing quantities.
     No close quantity is reused. Multiple close IDs and weighted prices are
     shown for partial closes. Missing history stays explicitly unmatched.
     """
+    exit_owners = exit_owners or {}
     by_order = {}
     for row in orders:
         oid = str(row.get("ordId") or "")
@@ -141,7 +142,7 @@ def manual_order_rows(orders: list[dict], fills: list[dict], *, limit: int = 20)
             entry = entries.setdefault(oid, dict(row=row, manual=manual,
                 logical=event["logical"], ts=event["ts"], latest=event["ts"],
                 qty=Decimal(0), cost=Decimal(0), closed=Decimal(0),
-                close_cost=Decimal(0), close_ts=0, ids=[]))
+                close_cost=Decimal(0), close_ts=0, ids=[], closes={}))
             entry["qty"] += event["qty"]
             entry["cost"] += event["qty"] * event["px"]
             entry["latest"] = max(entry["latest"], event["ts"])
@@ -149,28 +150,42 @@ def manual_order_rows(orders: list[dict], fills: list[dict], *, limit: int = 20)
             continue
         left = event["qty"]
         queue = queues[event["logical"]]
-        while left and queue:
-            entry, available = queue[0]
+        owner = exit_owners.get(oid)
+        eligible = [piece for piece in queue if owner is None or piece[0]["row"].get("ordId") == owner]
+        for piece in eligible:
+            if not left:
+                break
+            entry, available = piece
             taken = min(left, available)
             entry["closed"] += taken
             entry["close_cost"] += taken * event["px"]
             entry["close_ts"] = max(entry["close_ts"], event["ts"])
             entry["latest"] = max(entry["latest"], event["ts"])
+            entry["closes"][oid] = entry["closes"].get(oid, Decimal(0)) + taken
             if oid not in entry["ids"]:
                 entry["ids"].append(oid)
             left -= taken
-            queue[0][1] -= taken
-            if not queue[0][1]:
-                queue.popleft()
+            piece[1] -= taken
+            if not piece[1]:
+                queue.remove(piece)
         if left and manual:
             unmatched.append((event, left))
+    return entries, unmatched
+
+
+def manual_order_rows(orders: list[dict], fills: list[dict], *, limit: int = 20,
+                      exit_owners=None):
+    """Display latest 20; prefer known ledger close links over inferred FIFO."""
+    entries, unmatched = manual_order_inventory(orders, fills, exit_owners=exit_owners)
     result = []
     for oid, entry in entries.items():
         if not entry["manual"]:
             continue
         closed = entry["closed"]
-        status = ("已平仓（FIFO）" if closed == entry["qty"] else
-                  f"部分平仓 {_text(closed)}/{_text(entry['qty'])}（FIFO）" if closed else
+        linked = bool(entry["ids"]) and all((exit_owners or {}).get(i) == oid for i in entry["ids"])
+        label = "账本关联" if linked else "FIFO"
+        status = (f"已平仓（{label}）" if closed == entry["qty"] else
+                  f"部分平仓 {_text(closed)}/{_text(entry['qty'])}（{label}）" if closed else
                   "未匹配平仓（历史范围内）")
         result.append((entry["latest"], oid, (
             _when(entry["ts"]), _when(entry["close_ts"]), "手工开仓",

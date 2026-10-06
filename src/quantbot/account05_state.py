@@ -164,6 +164,26 @@ class Account05StateStore:
                 status TEXT NOT NULL DEFAULT 'claimed' CHECK(status IN ('claimed','complete')),
                 created_at_utc TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS account05_manual_order_history (
+                order_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS account05_extreme_targets (
+                event_key TEXT NOT NULL,
+                lot_id TEXT NOT NULL,
+                target_size TEXT NOT NULL,
+                PRIMARY KEY(event_key,lot_id)
+            );
+            CREATE TABLE IF NOT EXISTS account05_extreme_exit_fills (
+                lot_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                filled_size TEXT NOT NULL,
+                exit_price TEXT NOT NULL,
+                PRIMARY KEY(lot_id,order_id)
+            );
+            CREATE TABLE IF NOT EXISTS account05_profit_credits (
+                credit_key TEXT PRIMARY KEY
+            );
             """
         )
         columns = {str(row["name"]) for row in self.connection.execute(
@@ -201,6 +221,12 @@ class Account05StateStore:
             self.connection.execute(
                 "ALTER TABLE account05_extreme_rotation_events "
                 "ADD COLUMN status TEXT NOT NULL DEFAULT 'claimed'")
+        if "plan_recorded" not in extreme_columns:
+            self.connection.execute(
+                "ALTER TABLE account05_extreme_rotation_events ADD COLUMN plan_recorded INTEGER NOT NULL DEFAULT 0")
+        if "reverse_signal_id" not in extreme_columns:
+            self.connection.execute(
+                "ALTER TABLE account05_extreme_rotation_events ADD COLUMN reverse_signal_id TEXT NOT NULL DEFAULT ''")
         self._seed_signal_latches_from_history()
         self.connection.commit()
 
@@ -817,7 +843,8 @@ class Account05StateStore:
         return self.recovery_pool()
 
     def credit_recovery_profit(self, net_profit: Decimal,
-                               pool_share: Decimal = Decimal("0.80")) -> dict[str, Decimal]:
+                               pool_share: Decimal = Decimal("0.80"),
+                               credit_key: str | None = None) -> dict[str, Decimal]:
         if net_profit <= 0 or not (Decimal("0") <= pool_share <= Decimal("1")):
             raise ValueError("invalid recovery profit credit")
         pool_credit = net_profit * pool_share
@@ -825,6 +852,12 @@ class Account05StateStore:
         now = datetime.now(timezone.utc).isoformat()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
+            if credit_key is not None:
+                inserted = self.connection.execute(
+                    "INSERT OR IGNORE INTO account05_profit_credits VALUES (?)", (credit_key,))
+                if inserted.rowcount == 0:
+                    self.connection.commit()
+                    return self.recovery_pool()
             current = self.recovery_pool()
             self.connection.execute(
                 """INSERT INTO account05_recovery_pool
@@ -985,6 +1018,26 @@ class Account05StateStore:
         self.connection.commit()
         if cursor.rowcount != 1:
             raise KeyError(event_key)
+
+    def freeze_extreme_targets(self, event_key: str, lots: list[Account05Lot],
+                               reverse_signal_id: str) -> tuple[list[tuple[str, Decimal]], str]:
+        row = self.connection.execute(
+            "SELECT * FROM account05_extreme_rotation_events WHERE event_key=?", (event_key,)).fetchone()
+        if row is None or row["status"] != "claimed":
+            raise ValueError("extreme event is not claimed")
+        if not row["plan_recorded"]:
+            with self.connection:
+                self.connection.executemany(
+                    "INSERT INTO account05_extreme_targets VALUES (?,?,?)",
+                    [(event_key, lot.lot_id, str(lot.remaining_size)) for lot in lots])
+                self.connection.execute(
+                    "UPDATE account05_extreme_rotation_events SET plan_recorded=1,reverse_signal_id=? WHERE event_key=?",
+                    (reverse_signal_id, event_key))
+        row = self.connection.execute(
+            "SELECT reverse_signal_id FROM account05_extreme_rotation_events WHERE event_key=?", (event_key,)).fetchone()
+        targets = [(str(x["lot_id"]), Decimal(x["target_size"])) for x in self.connection.execute(
+            "SELECT lot_id,target_size FROM account05_extreme_targets WHERE event_key=? ORDER BY lot_id", (event_key,))]
+        return targets, str(row[0])
 
     def claim_new_signal_shapes(
             self, present: tuple[tuple, ...], observation_bar: str = "",

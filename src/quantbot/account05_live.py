@@ -150,6 +150,17 @@ class Account05LiveClient(OkxLiveAggressiveAdapter):
         path = "/api/v5/trade/orders-history" + ("-archive" if archive else "")
         return self._request("GET", path, payload, private=True).get("data", [])
 
+    def exit_quote(self, position_side: str, inst_id: str = "ETH-USDT-SWAP") -> Decimal:
+        """Executable-side public quote for checking profit before a close."""
+        if position_side not in {"long", "short"}:
+            raise ValueError("invalid position side")
+        rows = self._request("GET", "/api/v5/market/ticker", {"instId": inst_id}).get("data", [])
+        row = rows[0] if rows else {}
+        value = Decimal(str(row.get("bidPx" if position_side == "long" else "askPx") or "0"))
+        if not value.is_finite() or value <= 0:
+            raise OkxError("账户05极值平仓实时报价缺失，先对账，不反手")
+        return value
+
     def fills_history(self, inst_id: str = "ETH-USDT-SWAP", *, limit: int = 100,
                       after: str = "", before: str = "", strict: bool = False) -> list[dict]:
         payload = {"instType": "SWAP", "instId": inst_id,

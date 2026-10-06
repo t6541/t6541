@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-quantbot"
-version = "0.7.395"
+version = "0.7.396"
 description = "Reproducible, paper-trading-first quantitative research workflow"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24", "pandas>=2.0"]

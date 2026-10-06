@@ -30,7 +30,7 @@ from .live_execution import OkxLiveManualClient, execute_approved_minimum_order
 from .live_aggressive_adapter import OkxLiveAggressiveAdapter
 from .live_account_settings import LiveAccountSettings, apply_account_strategy
 from .account05_signals import evaluate_account05_signals
-from .account05_execution import ACCOUNT05_INSTRUMENT, execute_account05_tick, import_manual_orders
+from .account05_execution import ACCOUNT05_INSTRUMENT, execute_account05_tick, import_manual_orders, manual_exit_owners
 from .account05_live import Account05LiveClient
 from .account05_state import Account05StateStore, PositionSide
 from .account05_entry_review import review_summary
@@ -1201,6 +1201,17 @@ def _show_recovery_pool() -> None:
     _request_recovery_pool_refresh()
 
 
+def _manual_order_close_links() -> dict[str, str]:
+    database = LIVE_WORKSPACE / "profiles" / "clone_research" / "strategy.sqlite3"
+    if not database.exists():
+        return {}
+    ledger = Account05StateStore(database)
+    try:
+        return manual_exit_owners(ledger)
+    finally:
+        ledger.close()
+
+
 def _manual_orders_worker() -> None:
     try:
         credentials = LIVE_SESSION_CREDENTIALS.get("clone_research")
@@ -1208,11 +1219,11 @@ def _manual_orders_worker() -> None:
             raise OkxError("账户05尚未绑定API")
         api_client = Account05LiveClient(credentials, timeout=20)
         orders, fills, warning = load_manual_order_history(api_client, ACCOUNT05_INSTRUMENT)
-        table = manual_order_rows(orders, fills, limit=20)
+        table = manual_order_rows(orders, fills, limit=20, exit_owners=_manual_order_close_links())
         HANDLES["manual_orders_raw_rows"] = table
         HANDLES["manual_orders_sort_column"] = int(HANDLES.get("manual_orders_sort_column", 0))
         _apply_manual_orders_sort()
-        status = f"最近手工成交{len(table)}条（最多20条）｜平仓按方向/数量/时间FIFO匹配｜不参与自动下单"
+        status = f"最近手工成交{len(table)}条（最多20条）｜平仓优先账本关联，其余按方向/数量/时间FIFO匹配｜不参与自动下单"
         if warning:
             status += f"｜历史不完整：{warning}"
         _text(HANDLES.get("manual_orders_status", 0), status)

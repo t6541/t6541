@@ -1,0 +1,34 @@
+{
+  "version": "0.7.396",
+  "offline": true,
+  "offline_validation": {
+    "passed": 119,
+    "failed": 0,
+    "files": [
+      "test_account05_signals.py",
+      "test_account05_state.py",
+      "test_account05_review_view.py",
+      "test_manual_order_review.py",
+      "test_live_aggressive_adapter.py",
+      "test_extreme_profit_sweep.py"
+    ],
+    "guard": "Python socket connection and DNS blocked; exchange simulated"
+  },
+  "additional_execution_strategy_suite": {
+    "passed": 47,
+    "failed": 20,
+    "same_failure_test_ids_as_imported_baseline": true,
+    "baseline_report": "docs/validation-v0.7.394.json"
+  },
+  "fix": "All qualifying manual and automatic addon source lots confirmed closed before one extreme reversal. Base exits unchanged. Persistent targets, exit recovery and idempotent profit credits. Quantity/time-aware manual import; known ledger exit ownership before FIFO.",
+  "limitations": [
+    "Windows native UI and live exchange behavior not executed",
+    "Unowned historical close links remain FIFO inference, not exchange-confirmed linkage",
+    "Incomplete history, position mismatch, missing executable quotes and uncertain order outcomes halt reversal for reconciliation",
+    "Market execution may slip after the strict profit gate; live fills not validated"
+  ],
+  "windows_release": {
+    "status": "pending",
+    "launched": false
+  }
+}
