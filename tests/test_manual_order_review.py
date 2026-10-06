@@ -171,6 +171,57 @@ def test_strict_fills_errors_propagate_but_legacy_behavior_is_preserved():
         Account05LiveClient.fills_history(client, strict=True)
 
 
+def test_history_sources_degrade_without_hiding_available_orders():
+    class Client:
+        def order_history_page(self, *args, **kwargs):
+            if kwargs["archive"]:
+                raise RuntimeError("archive temporarily unavailable")
+            return [order("opening", 1000)]
+        def fills_history(self, *args, **kwargs):
+            raise RuntimeError("fills temporarily unavailable")
+    orders, fills, warning = load_manual_order_history(Client(), "ETH-USDT-SWAP")
+    assert "archive temporarily unavailable" in warning
+    assert "fills temporarily unavailable" in warning
+    assert manual_order_rows(orders, fills)[0][6:9] == ("100", "—", "opening")
+
+
+def test_fills_still_render_when_both_order_history_sources_fail():
+    class Client:
+        def order_history_page(self, *args, **kwargs):
+            raise RuntimeError("orders unavailable")
+        def fills_history(self, *args, **kwargs):
+            return [dict(ordId="a", ts="1000", fillSz="1", fillPx="100",
+                         side="sell", posSide="short")]
+    orders, fills, warning = load_manual_order_history(Client(), "ETH-USDT-SWAP")
+    assert warning
+    assert manual_order_rows(orders, fills)[0][8] == "a"
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_account05_history_passes_real_transport_allowlist_offline(monkeypatch, archive):
+    import io
+    import json
+    from urllib.parse import urlsplit, parse_qs
+    from quantbot.live_audit import LiveAuditCredentials
+    from quantbot.live_aggressive_adapter import OkxLiveAggressiveAdapter
+    calls = []
+    def response(request, **kwargs):
+        calls.append(request)
+        return io.BytesIO(json.dumps({"code": "0", "data": [order("a", 1000)]}).encode())
+    monkeypatch.setattr("quantbot.live_aggressive_adapter.urlopen", response)
+    client = Account05LiveClient(LiveAuditCredentials("test-key", "test-secret", "test-passphrase"))
+    rows = client.order_history_page(archive=archive, after="42")
+    assert rows[0]["ordId"] == "a"
+    assert len(calls) == 1
+    parsed = urlsplit(calls[0].full_url)
+    expected = "/api/v5/trade/orders-history" + ("-archive" if archive else "")
+    assert parsed.path == expected
+    assert calls[0].get_method() == "GET"
+    assert parse_qs(parsed.query)["after"] == ["42"]
+    assert expected not in Account05LiveClient._POST_PATHS
+    assert expected not in OkxLiveAggressiveAdapter._GET_PATHS
+
+
 def _desktop_function(name, namespace):
     # Importing the Windows UI is impossible on Linux. Execute its real
     # Python handler with mocked native window APIs instead.

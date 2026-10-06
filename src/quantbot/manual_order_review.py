@@ -33,10 +33,16 @@ def _text(value: Decimal) -> str:
 def load_manual_order_history(client, inst_id: str, *, max_pages: int = 10):
     """Fetch bounded recent/archive history and fills; return coverage warning."""
     orders, fills, warnings = [], [], []
+    successful_reads = 0
     for archive in (False, True):
         after = ""
         for _ in range(max_pages):
-            page = client.order_history_page(inst_id, archive=archive, after=after)
+            try:
+                page = client.order_history_page(inst_id, archive=archive, after=after)
+            except Exception as exc:
+                warnings.append(f"{'归档' if archive else '最近'}订单历史读取失败：{exc}")
+                break
+            successful_reads += 1
             orders.extend(page)
             if len(page) < 100:
                 break
@@ -49,7 +55,12 @@ def load_manual_order_history(client, inst_id: str, *, max_pages: int = 10):
             warnings.append("订单历史达到查询上限")
     after = ""
     for _ in range(max_pages):
-        page = client.fills_history(inst_id, after=after, strict=True)
+        try:
+            page = client.fills_history(inst_id, after=after, strict=True)
+        except Exception as exc:
+            warnings.append(f"成交历史读取失败：{exc}")
+            break
+        successful_reads += 1
         fills.extend(page)
         if len(page) < 100:
             break
@@ -61,6 +72,8 @@ def load_manual_order_history(client, inst_id: str, *, max_pages: int = 10):
         after = cursor
     else:
         warnings.append("成交历史达到查询上限")
+    if not successful_reads:
+        raise RuntimeError("；".join(dict.fromkeys(warnings)))
     return orders, fills, "；".join(dict.fromkeys(warnings))
 
 

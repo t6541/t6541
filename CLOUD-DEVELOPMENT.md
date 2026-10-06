@@ -40,3 +40,7 @@ API诊断：云环境网络代理在HTTPS CONNECT阶段返回403，配置允许�
 ## 后续Windows构建结果
 
 修复后的运行37472678728（源码提交746a5bf）已成功，公开GitHub汇总页面可确认Success及1个产物：CodexQuantBot-Windows-EXE，29.9 MB。此结果替代上面的未构建状态。当前会话尚未下载或启动EXE，未核验EXE本身SHA-256；公开页面的产物摘要属于上传归档而不是内部EXE。API代理域名配置仍待应用。
+
+## 当前开发版本v0.7.395
+
+账户05历史GET路径白名单及历史来源降级修复，99项定向离线测试通过。GitHub API读取已恢复。Windows流程现发布原始EXE到GitHub Releases，停止Actions ZIP产物上传。此段替代上面手动运行/压缩包/API不可访问的当前状态说明；历史记录仅用于追溯。最新交接见NEW-COMPUTER-HANDOFF-v0.7.395.md。

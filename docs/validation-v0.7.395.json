@@ -1,0 +1,25 @@
+{
+  "version": "0.7.395",
+  "offline_validation": {
+    "passed": 99,
+    "failed": 0,
+    "files": [
+      "test_account05_signals.py",
+      "test_account05_state.py",
+      "test_account05_review_view.py",
+      "test_manual_order_review.py",
+      "test_live_aggressive_adapter.py"
+    ],
+    "guard": "Python socket connections and DNS disabled; HTTP transport mocked"
+  },
+  "fix": "Account05 read-only history endpoints added to subclass GET allowlist; no POST permissions changed",
+  "degraded_history": "Available order/fill sources still displayed if another source fails; errors warned; all-source failure preserves old display",
+  "limitations": [
+    "No live exchange connection or desktop startup",
+    "Manual closing linkage remains inferred FIFO",
+    "20 additional strategy/execution failures exist on imported baseline; see validation-v0.7.394.json"
+  ],
+  "windows_release": {
+    "status": "pending"
+  }
+}

@@ -14,6 +14,10 @@ from .okx import OkxError
 
 
 class Account05LiveClient(OkxLiveAggressiveAdapter):
+    _GET_PATHS = OkxLiveAggressiveAdapter._GET_PATHS | frozenset({
+        "/api/v5/trade/orders-history",
+        "/api/v5/trade/orders-history-archive",
+    })
     _POST_PATHS = OkxLiveAggressiveAdapter._POST_PATHS | frozenset({
         "/api/v5/account/set-leverage",
         "/api/v5/trade/amend-order",
