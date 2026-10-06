@@ -1,0 +1,17 @@
+[strategy]
+risk_profile = "aggressive"
+strategy_id = "strategy_03"
+strategy_version = "ma20_trend_retest_v1"
+trend_timeframe = "5m"
+entry_timeframe = "1m"
+ma_window = 20
+trend_count_window = 8
+trend_majority = 6
+retest_max_bars = 10
+default_observe_only = true
+
+[okx]
+environment = "demo"
+instrument = "ETH-USDT-SWAP"
+leverage = 10
+max_contracts_per_order = 1

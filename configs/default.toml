@@ -1,0 +1,47 @@
+[data]
+source = "synthetic"
+csv_path = "data/raw/market.csv"
+start = "2020-01-01"
+end = "2024-12-31"
+symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+seed = 42
+
+[factors]
+momentum_window = 20
+volatility_window = 20
+trend_window = 60
+
+[strategy]
+risk_profile = "aggressive"
+top_n = 3
+rebalance_every = 5
+
+[backtest]
+initial_cash = 1000000.0
+fee_bps = 3.0
+slippage_bps = 5.0
+annualization = 252
+fee_rebate_rate = 0.20
+
+[risk]
+max_position = 0.35
+max_gross_exposure = 1.0
+max_industry_exposure = 0.6
+max_drawdown = 0.20
+
+[okx]
+environment = "demo"
+instruments = ["ETH-USDT-SWAP"]
+margin_mode = "cross"
+leverage = 100
+max_contracts_per_order = 1
+enable_demo_orders = false
+validation_take_profit_pct = 0.0020
+validation_stop_loss_pct = 0.0015
+validation_trailing_callback_pct = 0.0005
+validation_max_trades_per_day = 200
+validation_max_leverage = 10
+validation_contracts = 1
+
+[output]
+root = "artifacts"

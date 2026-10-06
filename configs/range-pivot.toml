@@ -1,0 +1,73 @@
+[data]
+source = "okx"
+csv_path = "data/raw/eth-usdt-swap.csv"
+start = "2020-01-01"
+end = "2024-12-31"
+symbols = ["ETH-USDT-SWAP"]
+seed = 42
+bar = "1m"
+history_limit = 1000
+
+[factors]
+momentum_window = 20
+volatility_window = 20
+trend_window = 60
+
+[strategy]
+risk_profile = "aggressive"
+name = "range_pivot_reversal"
+top_n = 1
+rebalance_every = 1
+fast_window = 20
+slow_window = 60
+volatility_window = 20
+max_annualized_volatility = 1.5
+stop_loss_pct = 0.05
+long_weight = 0.30
+short_weight = 0.30
+signal_bars = ["1m", "5m", "15m"]
+pivot_lookback = 8
+pivot_lookback_min = 5
+pivot_lookback_max = 10
+pivot_timeframe = "5m"
+touch_atr_multiple = 0.25
+stop_atr_multiple = 0.75
+minimum_reward_risk = 1.5
+trend_fast_window = 20
+trend_slow_window = 60
+entry_fast_window = 5
+entry_slow_window = 10
+adx_window = 14
+max_adx_for_reversal = 22
+frequency_test_mode = true
+
+[backtest]
+initial_cash = 1000000.0
+fee_bps = 3.0
+slippage_bps = 5.0
+annualization = 252
+fee_rebate_rate = 0.20
+
+[risk]
+max_position = 0.30
+max_gross_exposure = 0.30
+max_industry_exposure = 0.30
+max_drawdown = 0.20
+risk_per_trade = 0.002
+daily_loss_limit = 0.0075
+daily_profit_stop = 0.02
+max_consecutive_losses = 2
+max_trades_per_day = 200
+cooldown_seconds = 60
+min_cost_edge_multiple = 2.0
+
+[okx]
+environment = "demo"
+instruments = ["ETH-USDT-SWAP"]
+margin_mode = "cross"
+leverage = 10
+max_contracts_per_order = 1
+enable_demo_orders = false
+
+[output]
+root = "artifacts/range-pivot"

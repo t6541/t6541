@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-quantbot"
+version = "0.7.338"
+description = "Reproducible, paper-trading-first quantitative research workflow"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24", "pandas>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyyaml>=6", "pyinstaller>=6"]
+akshare = ["akshare>=1.16"]
+tushare = ["tushare>=1.4"]
+
+[project.scripts]
+quantbot = "quantbot.cli:main"
+quantbot-desktop = "quantbot.desktop:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

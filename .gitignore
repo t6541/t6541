@@ -1,0 +1,23 @@
+# Local dependencies and generated outputs
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.deps/
+.test-deps/
+.build-deps/
+build/
+dist/
+artifacts/
+# Credentials and runtime state
+.env
+.env.*
+!.env.example
+*.sqlite*
+*.db
+*.db-*
+*.log
+credentials*.json
+*credentials*.toml
+*credentials*.json

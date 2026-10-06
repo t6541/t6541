@@ -1,0 +1,65 @@
+[data]
+source = "okx"
+csv_path = "data/raw/eth-usdt-swap.csv"
+start = "2020-01-01"
+end = "2024-12-31"
+symbols = ["ETH-USDT-SWAP"]
+seed = 42
+bar = "1D"
+history_limit = 1000
+
+[factors]
+momentum_window = 20
+volatility_window = 20
+trend_window = 60
+
+[strategy]
+risk_profile = "aggressive"
+name = "dual_ma_trend"
+top_n = 1
+rebalance_every = 1
+fast_window = 20
+slow_window = 60
+volatility_window = 20
+max_annualized_volatility = 1.5
+stop_loss_pct = 0.05
+long_weight = 0.30
+short_weight = 0.30
+signal_bars = ["1m", "5m", "15m"]
+
+[backtest]
+initial_cash = 1000000.0
+fee_bps = 3.0
+slippage_bps = 5.0
+annualization = 252
+fee_rebate_rate = 0.20
+
+[risk]
+max_position = 0.30
+max_gross_exposure = 0.30
+max_industry_exposure = 0.30
+max_drawdown = 0.20
+risk_per_trade = 0.002
+daily_loss_limit = 0.0075
+daily_profit_stop = 0.02
+max_consecutive_losses = 2
+max_trades_per_day = 24
+cooldown_seconds = 300
+min_cost_edge_multiple = 2.0
+
+[okx]
+environment = "demo"
+instruments = ["ETH-USDT-SWAP"]
+margin_mode = "cross"
+leverage = 10
+max_contracts_per_order = 1
+enable_demo_orders = false
+validation_take_profit_pct = 0.0020
+validation_stop_loss_pct = 0.0015
+validation_trailing_callback_pct = 0.0005
+validation_max_trades_per_day = 200
+validation_max_leverage = 10
+validation_contracts = 1
+
+[output]
+root = "artifacts/eth-trend"
