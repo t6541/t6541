@@ -2,6 +2,18 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'configs/**'
+      - 'desktop_entry.py'
+      - 'pyproject.toml'
+      - 'build-exe.ps1'
+      - 'quantbot_v096.spec'
+      - 'version_info.txt'
+      - '.github/workflows/windows-exe.yml'
 
 permissions:
   contents: read

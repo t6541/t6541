@@ -30,3 +30,9 @@ python -m pytest -q tests/test_account05_signals.py tests/test_account05_state.p
 在 Windows 64 位 Python 3.12 环境准备构建依赖，更新各处版本后运行 build-exe.ps1。该脚本执行 PyInstaller，不启动 EXE。当前云主机为 Linux，不能使用此处原生 PyInstaller 生成可验证的 Windows EXE。构建后记录 SHA-256，不启动实盘。
 
 GitHub Actions已提供手动Windows构建流程（Build Windows EXE），尚未执行验证。当前会话GitHub API返回Forbidden，需在仓库Actions页面手动运行并下载产物。
+
+## Windows首次构建修复
+
+首次Actions运行37471148707在测试阶段失败：Windows默认cp1252读取UTF-8源码导致4项UnicodeDecodeError，71项通过，打包步骤未执行。已明确指定UTF-8，Linux离线75项复验通过，并模拟Windows默认cp1252读取环境验证21项通过；仍需实际Windows构建完成证明。工作流现支持main相关源码/测试/构建文件推送后自动打包，保留手动运行入口。
+
+API诊断：云环境网络代理在HTTPS CONNECT阶段返回403，配置允许域名未包含api.github.com；已将该域名加入环境配置草稿，尚需环境设置保存/应用后再验证。GitHub自身Actions授权还未验证，不应仅凭代理拒绝访问就认定缺少GitHub权限。当前会话无用户电脑远程控制工具。

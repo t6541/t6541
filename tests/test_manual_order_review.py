@@ -174,7 +174,7 @@ def test_strict_fills_errors_propagate_but_legacy_behavior_is_preserved():
 def _desktop_function(name, namespace):
     # Importing the Windows UI is impossible on Linux. Execute its real
     # Python handler with mocked native window APIs instead.
-    source = Path("src/quantbot/win32desktop.py").read_text()
+    source = Path("src/quantbot/win32desktop.py").read_text(encoding="utf-8")
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == name)
     node.decorator_list = []
     exec(compile(ast.Module(body=[node], type_ignores=[]), "win32desktop.py", "exec"), namespace)
