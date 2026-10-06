@@ -1,0 +1,25 @@
+{
+  "version": "0.7.399",
+  "date": "2026-10-07",
+  "offline": true,
+  "offline_validation": {
+    "passed": 155,
+    "failed": 0,
+    "guard": "Socket connections and DNS blocked; exchange simulated",
+    "report": "/workspace/isolated/account05-v0.7.399.xml"
+  },
+  "changes": [
+    "Dedicated read-only inventory waiting state retries without new trading; no arbitrary quantity clipping",
+    "Reconcile known exit fills before importing history and comparing current position coverage",
+    "Durable automatic entry IDs prevent importing automatic orders without clOrdId as duplicate manual lots"
+  ],
+  "limitations": [
+    "Actual user production database and automatic-fault.log unavailable; cannot identify the specific affected lots",
+    "Persistent unresolved differences remain waiting; never silently authorize reversal",
+    "Existing base protection retained; new base entries remain disabled",
+    "Native Windows build pending; no exchange connection, desktop startup or live trading performed"
+  ],
+  "windows_release": {
+    "status": "pending"
+  }
+}

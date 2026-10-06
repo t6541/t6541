@@ -47,6 +47,10 @@ def manual_exit_owners(ledger: Account05StateStore) -> dict[str, str]:
     return links
 
 
+class ManualInventoryPending(OkxError):
+    """Read-only inventory mismatch; retry without authorizing new writes."""
+
+
 def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStore,
                          *, inst_id: str | None = None,
                          profit_points: Decimal = Decimal("10"),
@@ -66,7 +70,7 @@ def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStor
         if hasattr(client, "order_history_page") and hasattr(client, "fills_history"):
             orders, fills, warning = load_manual_order_history(client, inst_id, max_pages=100)
             if warning:
-                raise OkxError(f"手工订单历史不完整，禁止据此接管或极值反手：{warning}")
+                raise ManualInventoryPending(f"手工订单历史不完整，禁止据此接管或极值反手：{warning}")
         else:
             orders, fills = client.orders_history(inst_id, limit=100), []
     else:
@@ -103,9 +107,18 @@ def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStor
     all_orders = [r["row"] for r in records.values() if r["kind"] == "order"]
     all_fills = [r["row"] for r in records.values() if r["kind"] == "fill"]
     entries, _ = manual_order_inventory(all_orders, all_fills, exit_owners=manual_exit_owners(ledger))
+    # An automatic fill may be missing clOrdId in a history response.
+    # Durable entry identities take precedence over that incomplete label.
+    owned_auto = set()
+    for row in ledger.connection.execute(
+            "SELECT entry_order_id,signal_id FROM account05_lots"):
+        if not str(row["signal_id"]).startswith("manual:"):
+            oid = str(row["entry_order_id"])
+            owned_auto.add(oid)
+            owned_auto.add(oid.rsplit("-", 1)[0])
     plans = {}
     for oid, entry in entries.items():
-        if not entry["manual"]:
+        if not entry["manual"] or oid in owned_auto:
             continue
         signal = f"manual:{oid}"
         # A submitted/unknown/filled strategy exit owns this lot's quantity.
@@ -124,7 +137,11 @@ def import_manual_orders(client: Account05LiveClient, ledger: Account05StateStor
     for side, quantity in projected.items():
         actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
         if actual and quantity > actual:
-            raise OkxError(f"手工历史/批次数量{quantity}超过{side.value}实际仓位{actual}；先对账，不反手")
+            base_quantity = sum((lot.remaining_size for lot in ledger.open_lots(side)
+                                 if lot.kind == "base"), Decimal(0))
+            if base_quantity > actual:
+                raise OkxError(f"实际仓位{actual}不足以覆盖当前基础仓{base_quantity}；停止新交易并对账")
+            raise ManualInventoryPending(f"手工历史/批次数量{quantity}超过{side.value}实际仓位{actual}；差额{quantity-actual}，先对账，不反手")
     imported = 0
     for signal, entry in plans.items():
         side = PositionSide(entry["logical"])
@@ -1024,7 +1041,37 @@ def _restore_unprotected_base_take_profits(
     return tuple(restored)
 
 
-def execute_account05_tick(*, client: Account05LiveClient,
+def execute_account05_tick(*, client, ledger, settings, audit, one, five, fifteen,
+                           one_hour=None) -> Account05TickResult:
+    """Retry read-only inventory discrepancies without faulting or trading."""
+    try:
+        if hasattr(client, "orders_history"):
+            contract = audit["instrument"]
+            spec = ContractSpec(ct_val=Decimal(str(contract["ctVal"])),
+                lot_size=Decimal(str(contract["lotSz"])),
+                min_size=Decimal(str(contract["minSz"])))
+            # History may lag actual fills. Book known exits before comparing
+            # virtual lots to the exchange's aggregate position.
+            _reconcile_extreme_exit_results(client, ledger, spec)
+            _reconcile_addon_profit_limits(client, ledger, spec)
+            import_manual_orders(client, ledger,
+                profit_points=Decimal(settings.addon_take_profit_points()),
+                require_fresh=False)
+            positions = _position_map(client.raw_snapshot())
+            for side in (PositionSide.LONG, PositionSide.SHORT):
+                actual = abs(Decimal(str(positions.get(side, {}).get("pos") or "0")))
+                covered = sum((lot.remaining_size for lot in ledger.open_lots(side)), Decimal(0))
+                if actual and covered > actual:
+                    raise ManualInventoryPending(
+                        f"{side.value}本地批次{covered}超过实际仓位{actual}；差额{covered-actual}")
+        return _execute_account05_tick(client=client, ledger=ledger,
+            settings=settings, audit=audit, one=one, five=five,
+            fifteen=fifteen, one_hour=one_hour)
+    except ManualInventoryPending as exc:
+        return Account05TickResult("reconcile_wait", f"等待数量对账，自动重试；暂停新交易：{exc}")
+
+
+def _execute_account05_tick(*, client: Account05LiveClient,
                            ledger: Account05StateStore,
                            settings: LiveAccountSettings,
                            audit: dict, one, five, fifteen,
@@ -1420,7 +1467,7 @@ def execute_account05_tick(*, client: Account05LiveClient,
             covered = sum((lot.remaining_size for lot in ledger.open_lots(source_side)), Decimal(0))
             actual = abs(Decimal(str(current_positions.get(source_side, {}).get("pos") or "0")))
             if covered > actual:
-                raise OkxError("极值方向本地批次超过实际仓位；先对账，不平仓或反手")
+                raise ManualInventoryPending("极值方向本地批次超过实际仓位；先对账，不平仓或反手")
             quote = client.exit_quote(source_side.value) if hasattr(client, "exit_quote") else mark
             profitable = [lot for lot in source_lots
                           if _local_addon_net(lot, quote, spec) > 0
